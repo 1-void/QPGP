@@ -428,6 +428,39 @@ fn keygen_requires_passphrase_by_default() {
 }
 
 #[test]
+fn pqc_import_rejects_corrupt_cert() {
+    let _home = set_temp_home();
+    let backend = NativeBackend::new(PqcPolicy::Required);
+    if !require_pqc(backend.supports_pqc()) {
+        return;
+    }
+
+    let meta = backend
+        .generate_key(KeyGenParams {
+            user_id: UserId("Corrupt <corrupt@example.com>".to_string()),
+            algo: None,
+            pqc_policy: PqcPolicy::Required,
+            pqc_level: PqcLevel::Baseline,
+            passphrase: None,
+            allow_unprotected: true,
+        })
+        .expect("keygen");
+
+    let public = backend
+        .export_key(&meta.key_id, false, false)
+        .expect("export public");
+
+    let mut corrupted = public.clone();
+    if !corrupted.is_empty() {
+        let idx = corrupted.len() / 2;
+        corrupted[idx] ^= 0xFF;
+    }
+
+    let result = backend.import_key(&corrupted);
+    assert!(result.is_err(), "expected corrupt cert to be rejected");
+}
+
+#[test]
 fn decrypt_rejects_tampered_ciphertext() {
     let _home = set_temp_home();
     let backend = NativeBackend::new(PqcPolicy::Required);
