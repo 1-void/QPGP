@@ -18,6 +18,9 @@ Nobody wants to give enough time to build a post quantum pgp. so i did.
 
 Community preview. PQC-only, unapologetically strict, and still evolving.
 Not yet audited. If you want to help harden it, you’re welcome.
+Web-of-trust is not supported; verification is fingerprint-pinned only.
+
+Quantum note: PQC makes “store-now, decrypt-later” attacks dramatically harder, but nothing is absolutely unbreakable. Endpoint compromise, key distribution mistakes, or protocol bugs can still break security.
 
 ## Run
 

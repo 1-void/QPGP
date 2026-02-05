@@ -426,3 +426,142 @@ fn keygen_requires_passphrase_by_default() {
     });
     assert!(result.is_err(), "expected keygen to require passphrase");
 }
+
+#[test]
+fn decrypt_rejects_tampered_ciphertext() {
+    let _home = set_temp_home();
+    let backend = NativeBackend::new(PqcPolicy::Required);
+    if !require_pqc(backend.supports_pqc()) {
+        return;
+    }
+
+    let meta = backend
+        .generate_key(KeyGenParams {
+            user_id: UserId("Tamper <tamper@example.com>".to_string()),
+            algo: None,
+            pqc_policy: PqcPolicy::Required,
+            pqc_level: PqcLevel::Baseline,
+            passphrase: None,
+            allow_unprotected: true,
+        })
+        .expect("keygen");
+
+    let ciphertext = backend
+        .encrypt(EncryptRequest {
+            recipients: vec![meta.key_id],
+            plaintext: b"tamper test".to_vec(),
+            armor: false,
+            pqc_policy: PqcPolicy::Required,
+            compat: false,
+        })
+        .expect("encrypt");
+
+    let mut tampered = ciphertext.clone();
+    if let Some(byte) = tampered.last_mut() {
+        *byte ^= 0xFF;
+    }
+
+    let result = backend.decrypt(DecryptRequest {
+        ciphertext: tampered,
+        pqc_policy: PqcPolicy::Required,
+    });
+    assert!(result.is_err(), "expected tampered ciphertext to fail");
+}
+
+#[test]
+fn decrypt_rejects_wrong_key() {
+    let _home = set_temp_home();
+    let backend_a = NativeBackend::new(PqcPolicy::Required);
+    if !require_pqc(backend_a.supports_pqc()) {
+        return;
+    }
+
+    let key_a = backend_a
+        .generate_key(KeyGenParams {
+            user_id: UserId("KeyA <a@example.com>".to_string()),
+            algo: None,
+            pqc_policy: PqcPolicy::Required,
+            pqc_level: PqcLevel::Baseline,
+            passphrase: None,
+            allow_unprotected: true,
+        })
+        .expect("keygen A");
+
+    let public_a = backend_a
+        .export_key(&key_a.key_id, false, false)
+        .expect("export A");
+
+    let _home2 = set_temp_home();
+    let backend_b = NativeBackend::new(PqcPolicy::Required);
+    if !require_pqc(backend_b.supports_pqc()) {
+        return;
+    }
+
+    let _key_b = backend_b
+        .generate_key(KeyGenParams {
+            user_id: UserId("KeyB <b@example.com>".to_string()),
+            algo: None,
+            pqc_policy: PqcPolicy::Required,
+            pqc_level: PqcLevel::Baseline,
+            passphrase: None,
+            allow_unprotected: true,
+        })
+        .expect("keygen B");
+
+    backend_b.import_key(&public_a).expect("import A public");
+
+    let ciphertext = backend_b
+        .encrypt(EncryptRequest {
+            recipients: vec![key_a.key_id],
+            plaintext: b"wrong key test".to_vec(),
+            armor: false,
+            pqc_policy: PqcPolicy::Required,
+            compat: false,
+        })
+        .expect("encrypt");
+
+    let result = backend_b.decrypt(DecryptRequest {
+        ciphertext,
+        pqc_policy: PqcPolicy::Required,
+    });
+    assert!(result.is_err(), "expected wrong key decrypt to fail");
+}
+
+#[test]
+fn verify_rejects_modified_message() {
+    let _home = set_temp_home();
+    let backend = NativeBackend::new(PqcPolicy::Required);
+    if !require_pqc(backend.supports_pqc()) {
+        return;
+    }
+
+    let meta = backend
+        .generate_key(KeyGenParams {
+            user_id: UserId("Verify <verify@example.com>".to_string()),
+            algo: None,
+            pqc_policy: PqcPolicy::Required,
+            pqc_level: PqcLevel::Baseline,
+            passphrase: None,
+            allow_unprotected: true,
+        })
+        .expect("keygen");
+
+    let msg = b"original";
+    let sig = backend
+        .sign(SignRequest {
+            signer: meta.key_id,
+            message: msg.to_vec(),
+            armor: false,
+            cleartext: false,
+            pqc_policy: PqcPolicy::Required,
+        })
+        .expect("sign");
+
+    let result = backend.verify(VerifyRequest {
+        message: b"modified".to_vec(),
+        signature: sig,
+        cleartext: false,
+        pqc_policy: PqcPolicy::Required,
+    });
+    assert!(!result.expect("verify").valid, "expected invalid signature");
+}
