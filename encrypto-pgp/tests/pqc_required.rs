@@ -412,6 +412,11 @@ fn cleartext_sign_verify_roundtrip() {
             pqc_policy: PqcPolicy::Required,
         })
         .expect("clearsign");
+    let signed_text = String::from_utf8_lossy(&signed);
+    assert!(
+        signed_text.contains("BEGIN PGP SIGNED MESSAGE"),
+        "expected cleartext armor header"
+    );
 
     let result = backend
         .verify(VerifyRequest {
@@ -590,6 +595,11 @@ fn armored_sign_and_verify() {
             pqc_policy: PqcPolicy::Required,
         })
         .expect("sign");
+    let sig_text = String::from_utf8_lossy(&sig);
+    assert!(
+        sig_text.contains("BEGIN PGP SIGNATURE"),
+        "expected armored signature header"
+    );
 
     let result = backend
         .verify(VerifyRequest {
@@ -632,6 +642,11 @@ fn armored_encrypt_decrypt_roundtrip() {
             compat: false,
         })
         .expect("encrypt");
+    let cipher_text = String::from_utf8_lossy(&ciphertext);
+    assert!(
+        cipher_text.contains("BEGIN PGP MESSAGE"),
+        "expected armored message header"
+    );
 
     let plaintext = backend
         .decrypt(DecryptRequest {
@@ -640,6 +655,35 @@ fn armored_encrypt_decrypt_roundtrip() {
         })
         .expect("decrypt");
     assert_eq!(plaintext, msg);
+}
+
+#[test]
+fn export_secret_armor_contains_header() {
+    let _home = set_temp_home();
+    let backend = NativeBackend::new(PqcPolicy::Required);
+    if !require_pqc(backend.supports_pqc()) {
+        return;
+    }
+
+    let meta = backend
+        .generate_key(KeyGenParams {
+            user_id: UserId("Armor Secret <armor-secret@example.com>".to_string()),
+            algo: None,
+            pqc_policy: PqcPolicy::Required,
+            pqc_level: PqcLevel::Baseline,
+            passphrase: None,
+            allow_unprotected: true,
+        })
+        .expect("keygen");
+
+    let secret = backend
+        .export_key(&meta.key_id, true, true)
+        .expect("export secret armor");
+    let text = String::from_utf8_lossy(&secret);
+    assert!(
+        text.contains("BEGIN PGP PRIVATE KEY BLOCK") || text.contains("BEGIN PGP SECRET KEY BLOCK"),
+        "expected armored secret key block"
+    );
 }
 
 #[test]

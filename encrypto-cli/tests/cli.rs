@@ -253,6 +253,69 @@ fn encrypt_decrypt_roundtrip() {
 }
 
 #[test]
+fn encrypt_decrypt_roundtrip_armored() {
+    if !pqc_available() || !pqc_high_available() {
+        return;
+    }
+    let home = temp_home();
+    let (code, _stdout, stderr) = run_cli(
+        &[
+            "keygen",
+            "CLI Armor Enc <cli-armor@example.com>",
+            "--no-passphrase",
+        ],
+        &home,
+        None,
+    );
+    assert_eq!(code, 0, "keygen failed: {stderr}");
+
+    let (code, stdout, stderr) = run_cli(&["list-keys", "--secret"], &home, None);
+    assert_eq!(code, 0, "list-keys failed: {stderr}");
+    let fpr = parse_first_fingerprint(&stdout).expect("fingerprint");
+
+    let msg_path = home.join("armor-msg.txt");
+    let cipher_path = home.join("armor-msg.asc");
+    let out_path = home.join("armor-msg.out");
+    std::fs::write(&msg_path, b"hello armored").expect("write msg");
+
+    let (code, _stdout, stderr) = run_cli(
+        &[
+            "encrypt",
+            "-r",
+            &fpr,
+            "--armor",
+            "--in",
+            msg_path.to_str().unwrap(),
+            "--out",
+            cipher_path.to_str().unwrap(),
+        ],
+        &home,
+        None,
+    );
+    assert_eq!(code, 0, "encrypt failed: {stderr}");
+    let armored = std::fs::read_to_string(&cipher_path).expect("read armored");
+    assert!(
+        armored.contains("BEGIN PGP MESSAGE"),
+        "expected armored message header"
+    );
+
+    let (code, _stdout, stderr) = run_cli(
+        &[
+            "decrypt",
+            "--in",
+            cipher_path.to_str().unwrap(),
+            "--out",
+            out_path.to_str().unwrap(),
+        ],
+        &home,
+        None,
+    );
+    assert_eq!(code, 0, "decrypt failed: {stderr}");
+    let output = std::fs::read(&out_path).expect("read output");
+    assert_eq!(output, b"hello armored");
+}
+
+#[test]
 fn encrypt_rejects_conflicting_input_args() {
     if !pqc_available() {
         return;
@@ -572,6 +635,77 @@ fn rotate_requires_passphrase_without_flag() {
     assert!(
         stderr.contains("passphrase required for native rotation"),
         "unexpected stderr: {stderr}"
+    );
+}
+
+#[test]
+fn rotate_with_no_passphrase_succeeds() {
+    if !pqc_available() || !pqc_high_available() {
+        return;
+    }
+    let home = temp_home();
+    let (code, _stdout, stderr) = run_cli(
+        &[
+            "keygen",
+            "CLI Rotate OK <cli-rotate-ok@example.com>",
+            "--no-passphrase",
+        ],
+        &home,
+        None,
+    );
+    assert_eq!(code, 0, "keygen failed: {stderr}");
+
+    let (code, stdout, stderr) = run_cli(&["list-keys", "--secret"], &home, None);
+    assert_eq!(code, 0, "list-keys failed: {stderr}");
+    let fpr = parse_first_fingerprint(&stdout).expect("fingerprint");
+
+    let (code, stdout, stderr) = run_cli(&["rotate", &fpr, "--no-passphrase"], &home, None);
+    assert_eq!(code, 0, "rotate failed: {stderr}");
+    assert!(
+        stdout.contains("rotated key:"),
+        "unexpected stdout: {stdout}"
+    );
+}
+
+#[test]
+fn revoke_outputs_armored_cert() {
+    if !pqc_available() || !pqc_high_available() {
+        return;
+    }
+    let home = temp_home();
+    let output_path = temp_file_path("revoked");
+    let (code, _stdout, stderr) = run_cli(
+        &[
+            "keygen",
+            "CLI Revoke <cli-revoke@example.com>",
+            "--no-passphrase",
+        ],
+        &home,
+        None,
+    );
+    assert_eq!(code, 0, "keygen failed: {stderr}");
+
+    let (code, stdout, stderr) = run_cli(&["list-keys", "--secret"], &home, None);
+    assert_eq!(code, 0, "list-keys failed: {stderr}");
+    let fpr = parse_first_fingerprint(&stdout).expect("fingerprint");
+
+    let (code, _stdout, stderr) = run_cli(
+        &[
+            "revoke",
+            &fpr,
+            "--armor",
+            "--out",
+            output_path.to_str().unwrap(),
+        ],
+        &home,
+        None,
+    );
+    assert_eq!(code, 0, "revoke failed: {stderr}");
+
+    let armored = std::fs::read_to_string(&output_path).expect("read revoked");
+    assert!(
+        armored.contains("BEGIN PGP PUBLIC KEY BLOCK"),
+        "expected armored public key block"
     );
 }
 

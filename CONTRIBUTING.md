@@ -13,6 +13,7 @@ This project is intentionally conservative and security-focused.
 - Tests (recommended): `cargo test -p encrypto-pgp --tests`
 - PQC runtime: `./scripts/bootstrap-pqc.sh` then `source scripts/pqc-env.sh`
 - CLI help: `cargo run -p encrypto-cli -- --help`
+- Verify PQC suites: `cargo run -p encrypto-cli -- doctor` (must report baseline + high as supported)
 
 ## Coding Style
 - Run `cargo fmt` if you touch Rust files.
@@ -28,6 +29,7 @@ Local tests will skip PQC-heavy cases if PQC support is missing. CI requires PQC
 so run the bootstrap script to avoid surprises:
 - `./scripts/bootstrap-pqc.sh`
 - `source scripts/pqc-env.sh`
+Note: `keygen` defaults to the high suite and will fail if ML-DSA-87/ML-KEM-1024 are unavailable.
 
 ## Security
 Please do not file security issues publicly. See `SECURITY.md` for reporting.
