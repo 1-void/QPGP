@@ -3,6 +3,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use encrypto_core::{
     Backend, DecryptRequest, EncryptRequest, KeyGenParams, KeyId, OPENPGP_PQC_DRAFT, PqcLevel,
     PqcPolicy, RevocationReason, RevokeRequest, RotateRequest, SignRequest, UserId, VerifyRequest,
+    VerifyResult,
 };
 use encrypto_pgp::{NativeBackend, pqc_algorithms_supported};
 use std::fs;
@@ -145,6 +146,8 @@ enum Command {
         clearsigned: bool,
         #[arg(short = 'o', long, alias = "out", requires = "clearsigned")]
         output: Option<String>,
+        #[arg(long)]
+        signer: Option<String>,
     },
     Revoke {
         key_id: String,
@@ -357,7 +360,12 @@ fn main() -> Result<()> {
             input_file,
             clearsigned,
             output,
+            signer,
         } => {
+            let expected_signer = signer
+                .as_ref()
+                .map(|value| normalize_fingerprint(value))
+                .transpose()?;
             if clearsigned {
                 let input_path = merge_arg("input", input, input_file, "--input", "FILE")?;
                 let signature = read_input(input_path)?;
@@ -368,6 +376,7 @@ fn main() -> Result<()> {
                     pqc_policy: pqc_policy.clone(),
                 })?;
                 if result.valid {
+                    enforce_expected_signer(expected_signer.as_deref(), &result)?;
                     match result.signer {
                         Some(signer) => println!("valid signature from {}", signer.0),
                         None => println!("valid signature"),
@@ -396,6 +405,7 @@ fn main() -> Result<()> {
                     pqc_policy: pqc_policy.clone(),
                 })?;
                 if result.valid {
+                    enforce_expected_signer(expected_signer.as_deref(), &result)?;
                     match result.signer {
                         Some(signer) => println!("valid signature from {}", signer.0),
                         None => println!("valid signature"),
@@ -524,4 +534,36 @@ fn format_policy(policy: &PqcPolicy) -> &'static str {
         PqcPolicy::Preferred => "preferred",
         PqcPolicy::Required => "required",
     }
+}
+
+fn normalize_fingerprint(value: &str) -> Result<String> {
+    let normalized = value
+        .trim()
+        .trim_start_matches("0x")
+        .replace(' ', "")
+        .replace('\t', "")
+        .to_uppercase();
+    let len = normalized.len();
+    if (len != 40 && len != 64) || !normalized.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(anyhow!(
+            "fingerprint must be 40 or 64 hex characters (got {len})"
+        ));
+    }
+    Ok(normalized)
+}
+
+fn enforce_expected_signer(expected: Option<&str>, result: &VerifyResult) -> Result<()> {
+    let Some(expected) = expected else {
+        return Ok(());
+    };
+    let actual = result
+        .signer
+        .as_ref()
+        .ok_or_else(|| anyhow!("signature does not include signer fingerprint"))?;
+    let actual = normalize_fingerprint(&actual.0)
+        .map_err(|_| anyhow!("signature does not include full fingerprint"))?;
+    if actual != expected {
+        return Err(anyhow!("signature made by {actual}, expected {expected}"));
+    }
+    Ok(())
 }

@@ -10,7 +10,9 @@ use crate::crypto::SessionKey;
 use crate::packet::key::{Key4, SecretParts};
 use crate::packet::{key, Key};
 use crate::types::{Curve, HashAlgorithm, PublicKeyAlgorithm};
+use std::collections::HashMap;
 use std::convert::{TryFrom, TryInto};
+use std::sync::{Mutex, OnceLock};
 use std::time::SystemTime;
 
 use ossl::{
@@ -29,6 +31,16 @@ const RSA: &CStr = unsafe { CStr::from_ptr(b"RSA\0".as_ptr() as *const _) };
 fn not_set() -> anyhow::Error {
     Error::InvalidOperation("a required value was not set".into())
         .into()
+}
+
+fn require_len(actual: usize, expected: usize, label: &'static str) -> Result<()> {
+    if actual != expected {
+        return Err(Error::InvalidOperation(format!(
+            "{label} length mismatch: {actual} != {expected}"
+        ))
+        .into());
+    }
+    Ok(())
 }
 
 /// Signals that OpenSSL returned an unexpected key type.
@@ -149,10 +161,9 @@ impl Asymmetric for super::Backend {
             RSAEncryptSign | RSAEncrypt | RSASign => true,
             DSA => true,
             ECDH | ECDSA | EdDSA => true,
-            MLDSA65_Ed25519 | MLDSA87_Ed448 => true,
-            SLHDSA128s | SLHDSA128f | SLHDSA256s => true,
-            MLKEM768_X25519 | MLKEM1024_X448 =>
-                true,
+            MLDSA65_Ed25519 | MLDSA87_Ed448 => pqc_algo_supported(algo),
+            SLHDSA128s | SLHDSA128f | SLHDSA256s => pqc_algo_supported(algo),
+            MLKEM768_X25519 | MLKEM1024_X448 => pqc_algo_supported(algo),
             ElGamalEncrypt | ElGamalEncryptSign |
             Private(_) | Unknown(_)
                 => false,
@@ -502,8 +513,8 @@ impl Asymmetric for super::Backend {
             PkeyData::Mlkey(MlkeyData { ref pubkey, ref seed, .. }) => {
                 let pubkey = pubkey.as_ref().expect("to be set");
                 let mut public = Box::new([0; 1952]);
-                let l = public.len().min(pubkey.len());
-                public[..l].copy_from_slice(&pubkey[..l]);
+                require_len(pubkey.len(), public.len(), "ML-DSA-65 public key")?;
+                public.copy_from_slice(pubkey);
                 Ok((seed.as_ref().ok_or_else(not_set)?.into(), public))
             },
             _ => Err(wrong_key()),
@@ -558,8 +569,8 @@ impl Asymmetric for super::Backend {
             PkeyData::Mlkey(MlkeyData { ref pubkey, ref seed, .. }) => {
                 let pubkey = pubkey.as_ref().expect("to be set");
                 let mut public = Box::new([0; 2592]);
-                let l = public.len().min(pubkey.len());
-                public[..l].copy_from_slice(&pubkey[..l]);
+                require_len(pubkey.len(), public.len(), "ML-DSA-87 public key")?;
+                public.copy_from_slice(pubkey);
                 Ok((seed.as_ref().ok_or_else(not_set)?.into(), public))
             },
             _ => Err(wrong_key()),
@@ -640,8 +651,8 @@ impl Asymmetric for super::Backend {
             PkeyData::Mlkey(MlkeyData { ref pubkey, ref seed, .. }) => {
                 let pubkey = pubkey.as_ref().expect("to be set");
                 let mut public = Box::new([0; 1184]);
-                let l = public.len().min(pubkey.len());
-                public[..l].copy_from_slice(&pubkey[..l]);
+                require_len(pubkey.len(), public.len(), "ML-KEM-768 public key")?;
+                public.copy_from_slice(pubkey);
                 Ok((seed.as_ref().ok_or_else(not_set)?.into(), public))
             },
             _ => Err(wrong_key()),
@@ -668,8 +679,8 @@ impl Asymmetric for super::Backend {
         let mut ciphertext = Protected::from(vec![0; 1088]);
         let (keyshare, l) =
             encryptor.encapsulate(&mut ciphertext)?;
-        debug_assert_eq!(l, 1088);
-        debug_assert_eq!(ciphertext.len(), l);
+        require_len(l, 1088, "ML-KEM-768 ciphertext")?;
+        require_len(ciphertext.len(), l, "ML-KEM-768 ciphertext buffer")?;
         let mut boxed_ciphertext = Box::new([0; 1088]);
         boxed_ciphertext.copy_from_slice(&ciphertext);
 
@@ -695,7 +706,7 @@ impl Asymmetric for super::Backend {
         let mut encryptor = OsslAsymcipher::new(
             &ctx, EncOp::Decapsulate, &mut key, None)?;
         let keyshare = encryptor.decapsulate(&ciphertext[..])?;
-        debug_assert_eq!(keyshare.len(), 32);
+        require_len(keyshare.len(), 32, "ML-KEM-768 shared secret")?;
 
         Ok(keyshare.into())
     }
@@ -709,8 +720,8 @@ impl Asymmetric for super::Backend {
             PkeyData::Mlkey(MlkeyData { ref pubkey, ref seed, .. }) => {
                 let pubkey = pubkey.as_ref().expect("to be set");
                 let mut public = Box::new([0; 1568]);
-                let l = public.len().min(pubkey.len());
-                public[..l].copy_from_slice(&pubkey[..l]);
+                require_len(pubkey.len(), public.len(), "ML-KEM-1024 public key")?;
+                public.copy_from_slice(pubkey);
                 Ok((seed.as_ref().ok_or_else(not_set)?.into(), public))
             },
             _ => Err(wrong_key()),
@@ -737,8 +748,8 @@ impl Asymmetric for super::Backend {
         let mut ciphertext = Protected::from(vec![0; 1568]);
         let (keyshare, l) =
             encryptor.encapsulate(&mut ciphertext)?;
-        debug_assert_eq!(l, 1568);
-        debug_assert_eq!(ciphertext.len(), l);
+        require_len(l, 1568, "ML-KEM-1024 ciphertext")?;
+        require_len(ciphertext.len(), l, "ML-KEM-1024 ciphertext buffer")?;
         let mut boxed_ciphertext = Box::new([0; 1568]);
         boxed_ciphertext.copy_from_slice(&ciphertext);
 
@@ -764,10 +775,35 @@ impl Asymmetric for super::Backend {
         let mut encryptor = OsslAsymcipher::new(
             &ctx, EncOp::Decapsulate, &mut key, None)?;
         let keyshare = encryptor.decapsulate(&ciphertext[..])?;
-        debug_assert_eq!(keyshare.len(), 32);
+        require_len(keyshare.len(), 32, "ML-KEM-1024 shared secret")?;
 
         Ok(keyshare.into())
     }
+}
+
+fn pqc_algo_supported(algo: PublicKeyAlgorithm) -> bool {
+    use PublicKeyAlgorithm::*;
+    static CACHE: OnceLock<Mutex<HashMap<PublicKeyAlgorithm, bool>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(mut guard) = cache.lock() {
+        if let Some(value) = guard.get(&algo) {
+            return *value;
+        }
+        let ctx = super::context();
+        let supported = match algo {
+            MLDSA65_Ed25519 => EvpPkey::generate(&ctx, EvpPkeyType::Mldsa65).is_ok(),
+            MLDSA87_Ed448 => EvpPkey::generate(&ctx, EvpPkeyType::Mldsa87).is_ok(),
+            SLHDSA128s => EvpPkey::generate(&ctx, EvpPkeyType::SlhdsaShake128s).is_ok(),
+            SLHDSA128f => EvpPkey::generate(&ctx, EvpPkeyType::SlhdsaShake128f).is_ok(),
+            SLHDSA256s => EvpPkey::generate(&ctx, EvpPkeyType::SlhdsaShake256s).is_ok(),
+            MLKEM768_X25519 => EvpPkey::generate(&ctx, EvpPkeyType::MlKem768).is_ok(),
+            MLKEM1024_X448 => EvpPkey::generate(&ctx, EvpPkeyType::MlKem1024).is_ok(),
+            _ => false,
+        };
+        guard.insert(algo, supported);
+        return supported;
+    }
+    false
 }
 
 impl KeyPair {

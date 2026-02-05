@@ -4,7 +4,7 @@ This project is experimental and unaudited. Please treat it accordingly.
 
 ## Reporting a Vulnerability
 - Preferred: use GitHub Security Advisories
-- For complex or coordinated disclosures: email root@1-void.com
+- For complex or coordinated disclosures: email root@1-void.com (obviously always PGP your messages until we have this running)
 
 Please do not open public issues for security problems.
 

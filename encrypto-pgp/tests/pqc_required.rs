@@ -1,5 +1,5 @@
 use encrypto_core::{
-    Backend, DecryptRequest, EncryptRequest, KeyGenParams, PqcLevel, PqcPolicy, SignRequest,
+    Backend, DecryptRequest, EncryptRequest, KeyGenParams, KeyId, PqcLevel, PqcPolicy, SignRequest,
     UserId, VerifyRequest,
 };
 mod common;
@@ -183,6 +183,10 @@ fn pqc_roundtrip_import_export() {
         })
         .expect("verify");
     assert!(verify.valid, "signature did not verify");
+    assert!(
+        verify.signer.is_some(),
+        "expected signer fingerprint in verify result"
+    );
 
     let enc = backend2
         .encrypt(EncryptRequest {
@@ -247,6 +251,41 @@ fn cleartext_sign_verify_roundtrip() {
     assert!(
         verified_text.contains("cleartext message"),
         "cleartext message content missing"
+    );
+}
+
+#[test]
+fn short_key_id_rejected_for_signing() {
+    let _home = set_temp_home();
+    let backend = NativeBackend::new(PqcPolicy::Required);
+    if !require_pqc(backend.supports_pqc()) {
+        return;
+    }
+
+    let meta = backend
+        .generate_key(KeyGenParams {
+            user_id: UserId("Short Key <short@example.com>".to_string()),
+            algo: None,
+            pqc_policy: PqcPolicy::Required,
+            pqc_level: PqcLevel::Baseline,
+            passphrase: None,
+            allow_unprotected: true,
+        })
+        .expect("keygen");
+
+    let short = meta.key_id.0.chars().take(16).collect::<String>();
+    let err = backend
+        .sign(SignRequest {
+            signer: KeyId(short),
+            message: b"test".to_vec(),
+            armor: false,
+            cleartext: false,
+            pqc_policy: PqcPolicy::Required,
+        })
+        .expect_err("expected short key id to be rejected");
+    assert!(
+        err.to_string().contains("full fingerprint required"),
+        "unexpected error: {err}"
     );
 }
 

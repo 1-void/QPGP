@@ -57,7 +57,10 @@ cargo run -p encrypto-cli -- verify message.sig message.txt
 cargo run -p encrypto-cli -- sign -u <KEY_ID> --clearsign message.txt -o message.asc
 cargo run -p encrypto-cli -- verify --clearsigned message.asc
 cargo run -p encrypto-cli -- export <KEY_ID> --armor -o key.asc
+cargo run -p encrypto-cli -- verify --signer <FULL_FINGERPRINT> message.sig message.txt
 ```
+
+Note: sensitive operations require a full fingerprint (40 or 64 hex characters). Use `list-keys` to find the exact fingerprint.
 
 Passphrase note: prefer `--passphrase-file` to avoid exposing secrets in process listings.
 

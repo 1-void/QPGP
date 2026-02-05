@@ -123,6 +123,7 @@ pub fn ensure_pqc_encryption_output(bytes: &[u8]) -> Result<(), PolicyError> {
     let pile = PacketPile::from_bytes(bytes)
         .map_err(|err| PolicyError::Parse(format!("parse output failed: {err}")))?;
     let mut pkesk_count = 0usize;
+    let mut seip_count = 0usize;
     for packet in pile.descendants() {
         if let Packet::PKESK(pkesk) = packet {
             pkesk_count += 1;
@@ -133,10 +134,18 @@ pub fn ensure_pqc_encryption_output(bytes: &[u8]) -> Result<(), PolicyError> {
                 )));
             }
         }
+        if let Packet::SEIP(_) = packet {
+            seip_count += 1;
+        }
     }
     if pkesk_count == 0 {
         return Err(PolicyError::Violation(
             "no recipient packets found".to_string(),
+        ));
+    }
+    if seip_count == 0 {
+        return Err(PolicyError::Violation(
+            "encrypted data is not integrity protected (missing SEIP packet)".to_string(),
         ));
     }
     Ok(())
@@ -191,6 +200,11 @@ pub fn ensure_pqc_signature_output(bytes: &[u8]) -> Result<(), PolicyError> {
     }
     if sig_count == 0 {
         return Err(PolicyError::Violation("no signatures found".to_string()));
+    }
+    if sig_count > 1 {
+        return Err(PolicyError::Violation(format!(
+            "multiple signatures found ({sig_count}); expected exactly one"
+        )));
     }
     Ok(())
 }

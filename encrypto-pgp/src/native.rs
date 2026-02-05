@@ -169,35 +169,65 @@ impl NativeBackend {
         Ok(())
     }
 
-    fn find_cert(&self, id: &KeyId, secret_only: bool) -> Result<Cert, EncryptoError> {
-        let needle = normalize_id(&id.0);
+    fn find_cert_candidates(
+        &self,
+        selector: &str,
+        secret_only: bool,
+    ) -> Result<Vec<Cert>, EncryptoError> {
+        let needle = normalize_id(selector);
         if needle.is_empty() {
             return Err(EncryptoError::InvalidInput("empty key id".to_string()));
         }
-        let mut matches = Vec::new();
         let certs = if secret_only {
             self.load_secret_certs()?
         } else {
             self.load_all_certs()?
         };
+        Ok(certs
+            .into_iter()
+            .filter(|cert| cert_matches(cert, &needle, selector))
+            .collect())
+    }
 
+    fn find_cert_strict(&self, id: &KeyId, secret_only: bool) -> Result<Cert, EncryptoError> {
+        let needle = normalize_id(&id.0);
+        if !is_full_fingerprint(&needle) {
+            let matches = self.find_cert_candidates(&id.0, secret_only)?;
+            if matches.is_empty() {
+                return Err(EncryptoError::InvalidInput(format!(
+                    "full fingerprint required; no matches for {}",
+                    id.0
+                )));
+            }
+            let mut lines = Vec::new();
+            for cert in matches {
+                let user = cert
+                    .userids()
+                    .next()
+                    .map(|u| u.userid().to_string())
+                    .unwrap_or_else(|| "(no user id)".to_string());
+                lines.push(format!("{} | {}", cert.fingerprint().to_hex(), user));
+            }
+            return Err(EncryptoError::InvalidInput(format!(
+                "full fingerprint required; matches:\n{}",
+                lines.join("\n")
+            )));
+        }
+
+        let certs = if secret_only {
+            self.load_secret_certs()?
+        } else {
+            self.load_all_certs()?
+        };
         for cert in certs {
-            if cert_matches(&cert, &needle, &id.0) {
-                matches.push(cert);
+            if normalize_id(&cert.fingerprint().to_hex()) == needle {
+                return Ok(cert);
             }
         }
-
-        match matches.len() {
-            0 => Err(EncryptoError::InvalidInput(format!(
-                "key not found: {}",
-                id.0
-            ))),
-            1 => Ok(matches.remove(0)),
-            _ => Err(EncryptoError::InvalidInput(format!(
-                "key id is ambiguous: {}",
-                id.0
-            ))),
-        }
+        Err(EncryptoError::InvalidInput(format!(
+            "key not found: {}",
+            id.0
+        )))
     }
 
     fn meta_from_cert(&self, cert: &Cert) -> KeyMeta {
@@ -438,7 +468,7 @@ impl Backend for NativeBackend {
 
     fn export_key(&self, id: &KeyId, secret: bool, armor: bool) -> Result<Vec<u8>, EncryptoError> {
         self.ensure_pqc_only(&self.pqc_policy)?;
-        let cert = self.find_cert(id, secret)?;
+        let cert = self.find_cert_strict(id, secret)?;
         if secret && !cert.is_tsk() {
             return Err(EncryptoError::InvalidInput(
                 "secret key not available".to_string(),
@@ -460,7 +490,7 @@ impl Backend for NativeBackend {
 
         let mut certs = Vec::new();
         for recipient in &req.recipients {
-            certs.push(self.find_cert(recipient, false)?);
+            certs.push(self.find_cert_strict(recipient, false)?);
         }
 
         if matches!(req.pqc_policy, PqcPolicy::Required)
@@ -608,7 +638,7 @@ impl Backend for NativeBackend {
 
     fn sign(&self, req: SignRequest) -> Result<Vec<u8>, EncryptoError> {
         self.ensure_pqc_only(&req.pqc_policy)?;
-        let cert = self.find_cert(&req.signer, true)?;
+        let cert = self.find_cert_strict(&req.signer, true)?;
         if matches!(req.pqc_policy, PqcPolicy::Required) && !cert_has_pqc_signing_key(&cert) {
             return Err(EncryptoError::InvalidInput(
                 "PQC required but signing key is not PQC".to_string(),
@@ -764,7 +794,7 @@ impl Backend for NativeBackend {
 
     fn revoke_key(&self, req: RevokeRequest) -> Result<RevokeResult, EncryptoError> {
         self.ensure_pqc_only(&self.pqc_policy)?;
-        let cert = self.find_cert(&req.key_id, true)?;
+        let cert = self.find_cert_strict(&req.key_id, true)?;
         if !cert.is_tsk() {
             return Err(EncryptoError::InvalidInput(
                 "secret key not available for revocation".to_string(),
@@ -814,7 +844,7 @@ impl Backend for NativeBackend {
 
     fn rotate_key(&self, req: RotateRequest) -> Result<RotateResult, EncryptoError> {
         self.ensure_pqc_only(&req.pqc_policy)?;
-        let cert = self.find_cert(&req.key_id, false)?;
+        let cert = self.find_cert_strict(&req.key_id, false)?;
         let user_id = match req.new_user_id {
             Some(uid) => uid,
             None => cert
@@ -989,6 +1019,14 @@ fn normalize_id(input: &str) -> String {
         .to_uppercase()
 }
 
+fn is_full_fingerprint(input: &str) -> bool {
+    let len = input.len();
+    if len != 40 && len != 64 {
+        return false;
+    }
+    input.chars().all(|c| c.is_ascii_hexdigit())
+}
+
 fn policy_error(err: encrypto_policy::PolicyError) -> EncryptoError {
     EncryptoError::Backend(err.to_string())
 }
@@ -1025,8 +1063,15 @@ fn signer_from_signature(bytes: &[u8]) -> Option<KeyId> {
     let mut handles: Vec<String> = Vec::new();
     for packet in pile.descendants() {
         if let Packet::Signature(sig) = packet {
-            for issuer in sig.get_issuers() {
-                handles.push(format!("{:X}", issuer));
+            let mut added = false;
+            for fpr in sig.issuer_fingerprints() {
+                handles.push(format!("{:X}", fpr));
+                added = true;
+            }
+            if !added {
+                for issuer in sig.get_issuers() {
+                    handles.push(format!("{:X}", issuer));
+                }
             }
         }
     }
