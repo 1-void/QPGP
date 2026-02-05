@@ -1,10 +1,13 @@
 use anyhow::{Result, anyhow};
 use clap::{Parser, Subcommand, ValueEnum};
 use encrypto_core::{
-    Backend, DecryptRequest, EncryptRequest, KeyGenParams, KeyId, PqcPolicy, SignRequest, UserId,
+    Backend, DecryptRequest, EncryptRequest, KeyGenParams, KeyId, PqcLevel, PqcPolicy, SignRequest,
+    UserId,
     VerifyRequest,
 };
-use encrypto_pgp::{GpgBackend, GpgConfig, NativeBackend, PinentryMode};
+use encrypto_pgp::{
+    pqc_algorithms_supported, GpgBackend, GpgConfig, NativeBackend, PinentryMode,
+};
 use std::fs;
 use std::io::{self, Read, Write};
 
@@ -62,6 +65,12 @@ enum PqcMode {
 }
 
 #[derive(ValueEnum, Debug, Clone, Copy)]
+enum PqcLevelArg {
+    Baseline,
+    High,
+}
+
+#[derive(ValueEnum, Debug, Clone, Copy)]
 enum PinentryModeArg {
     Default,
     Ask,
@@ -88,6 +97,15 @@ impl From<PinentryModeArg> for PinentryMode {
     }
 }
 
+impl From<PqcLevelArg> for PqcLevel {
+    fn from(level: PqcLevelArg) -> Self {
+        match level {
+            PqcLevelArg::Baseline => PqcLevel::Baseline,
+            PqcLevelArg::High => PqcLevel::High,
+        }
+    }
+}
+
 #[derive(Subcommand, Debug)]
 enum Command {
     Info,
@@ -96,6 +114,8 @@ enum Command {
         user_id: String,
         #[arg(long)]
         algo: Option<String>,
+        #[arg(long, value_enum, default_value_t = PqcLevelArg::Baseline)]
+        pqc_level: PqcLevelArg,
     },
     Import {
         path: String,
@@ -183,6 +203,11 @@ fn main() -> Result<()> {
             println!("backend: {}", backend.name());
             println!("pqc policy: {}", format_policy(&pqc_policy));
             println!("pqc supported: {}", backend.supports_pqc());
+            if backend.name() == "native" {
+                for (name, supported) in pqc_algorithms_supported() {
+                    println!("pqc algo {name}: {supported}");
+                }
+            }
             Ok(())
         }
         Command::ListKeys => {
@@ -202,11 +227,16 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
-        Command::Keygen { user_id, algo } => {
+        Command::Keygen {
+            user_id,
+            algo,
+            pqc_level,
+        } => {
             let params = KeyGenParams {
                 user_id: UserId(user_id),
                 algo,
                 pqc_policy: pqc_policy.clone(),
+                pqc_level: pqc_level.into(),
             };
             let meta = backend.generate_key(params)?;
             println!("created key: {}", meta.key_id.0);

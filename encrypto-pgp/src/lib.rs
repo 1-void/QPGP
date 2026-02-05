@@ -1,6 +1,6 @@
 use encrypto_core::{
     Backend, DecryptRequest, EncryptRequest, EncryptoError, KeyGenParams, KeyId, KeyMeta,
-    PqcPolicy, SignRequest, UserId, VerifyRequest, VerifyResult,
+    PqcLevel, PqcPolicy, SignRequest, UserId, VerifyRequest, VerifyResult,
 };
 use std::collections::HashMap;
 use std::fs;
@@ -15,16 +15,16 @@ use openpgp::armor::{Kind as ArmorKind, Writer as ArmorWriter};
 use openpgp::cert::prelude::*;
 use openpgp::crypto::SessionKey;
 use openpgp::packet::{PKESK, SKESK};
-use openpgp::parse::Parse;
 use openpgp::parse::stream::{
     DecryptionHelper, DecryptorBuilder, DetachedVerifierBuilder, MessageStructure,
     VerificationHelper,
 };
+use openpgp::parse::Parse;
 use openpgp::policy::StandardPolicy;
 use openpgp::serialize::stream::{Armorer, Encryptor, LiteralWriter, Message, Signer};
 use openpgp::serialize::{Serialize, SerializeInto};
-use openpgp::types::SymmetricAlgorithm;
-use openpgp::{Cert, KeyHandle, KeyID, Profile};
+use openpgp::types::{HashAlgorithm, PublicKeyAlgorithm, SymmetricAlgorithm};
+use openpgp::{Cert, KeyHandle, KeyID, Packet, PacketPile, Profile};
 use sequoia_openpgp as openpgp;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -581,9 +581,15 @@ impl NativeBackend {
         ) || matches!(self.pqc_policy, PqcPolicy::Preferred | PqcPolicy::Required);
 
         if prefer_pqc {
-            let suite = CipherSuite::MLDSA65_Ed25519;
-            if pqc_available() {
+            let suite = match params.pqc_level {
+                PqcLevel::Baseline => CipherSuite::MLDSA65_Ed25519,
+                PqcLevel::High => CipherSuite::MLDSA87_Ed448,
+            };
+            if pqc_available_for_suite(suite) {
                 return Ok(suite);
+            }
+            if matches!(params.pqc_level, PqcLevel::High) && pqc_available() {
+                return Ok(CipherSuite::MLDSA65_Ed25519);
             }
             if matches!(params.pqc_policy, PqcPolicy::Required)
                 || matches!(self.pqc_policy, PqcPolicy::Required)
@@ -657,6 +663,19 @@ impl Default for NativeBackend {
     fn default() -> Self {
         Self::new(PqcPolicy::Preferred)
     }
+}
+
+pub fn pqc_algorithms_supported() -> Vec<(&'static str, bool)> {
+    use PublicKeyAlgorithm::*;
+    vec![
+        ("MLDSA65_Ed25519", MLDSA65_Ed25519.is_supported()),
+        ("MLDSA87_Ed448", MLDSA87_Ed448.is_supported()),
+        ("SLHDSA128s", SLHDSA128s.is_supported()),
+        ("SLHDSA128f", SLHDSA128f.is_supported()),
+        ("SLHDSA256s", SLHDSA256s.is_supported()),
+        ("MLKEM768_X25519", MLKEM768_X25519.is_supported()),
+        ("MLKEM1024_X448", MLKEM1024_X448.is_supported()),
+    ]
 }
 
 impl Backend for NativeBackend {
@@ -759,15 +778,20 @@ impl Backend for NativeBackend {
             certs.push(self.find_cert(recipient, false)?);
         }
 
-        if matches!(req.pqc_policy, PqcPolicy::Required) && !certs.iter().all(is_pqc_cert) {
+        if matches!(req.pqc_policy, PqcPolicy::Required)
+            && !certs.iter().all(cert_has_pqc_encryption_key)
+        {
             return Err(EncryptoError::InvalidInput(
                 "PQC required but one or more recipient keys are not PQC".to_string(),
             ));
         }
 
+        let prefer_pqc = matches!(req.pqc_policy, PqcPolicy::Preferred | PqcPolicy::Required);
         let policy = StandardPolicy::new();
         let mut recipients: Vec<openpgp::serialize::stream::Recipient<'_>> = Vec::new();
         for cert in &certs {
+            let mut pqc_keys = Vec::new();
+            let mut classic_keys = Vec::new();
             for key in cert
                 .keys()
                 .with_policy(&policy, None)
@@ -776,6 +800,30 @@ impl Backend for NativeBackend {
                 .revoked(false)
                 .for_transport_encryption()
             {
+                if is_pqc_kem_algo(key.key().pk_algo()) {
+                    pqc_keys.push(key);
+                } else {
+                    classic_keys.push(key);
+                }
+            }
+
+            let selected = if matches!(req.pqc_policy, PqcPolicy::Required) {
+                if pqc_keys.is_empty() {
+                    return Err(EncryptoError::InvalidInput(
+                        "PQC required but recipient has no PQC encryption keys".to_string(),
+                    ));
+                }
+                pqc_keys
+            } else if prefer_pqc && !pqc_keys.is_empty() {
+                pqc_keys
+            } else {
+                let mut all = Vec::with_capacity(pqc_keys.len() + classic_keys.len());
+                all.extend(pqc_keys);
+                all.extend(classic_keys);
+                all
+            };
+
+            for key in selected {
                 recipients.push(key.into());
             }
         }
@@ -806,6 +854,9 @@ impl Backend for NativeBackend {
         message
             .finalize()
             .map_err(|err| EncryptoError::Backend(format!("finalize failed: {err}")))?;
+        if matches!(req.pqc_policy, PqcPolicy::Required) {
+            ensure_pqc_encryption_output(&sink)?;
+        }
         Ok(sink)
     }
 
@@ -827,14 +878,17 @@ impl Backend for NativeBackend {
 
     fn sign(&self, req: SignRequest) -> Result<Vec<u8>, EncryptoError> {
         let cert = self.find_cert(&req.signer, true)?;
-        if matches!(req.pqc_policy, PqcPolicy::Required) && !is_pqc_cert(&cert) {
+        if matches!(req.pqc_policy, PqcPolicy::Required) && !cert_has_pqc_signing_key(&cert) {
             return Err(EncryptoError::InvalidInput(
                 "PQC required but signing key is not PQC".to_string(),
             ));
         }
 
+        let prefer_pqc = matches!(req.pqc_policy, PqcPolicy::Preferred | PqcPolicy::Required);
         let p = &StandardPolicy::new();
-        let key = cert
+        let mut pqc_keys = Vec::new();
+        let mut classic_keys = Vec::new();
+        for key in cert
             .keys()
             .secret()
             .with_policy(p, None)
@@ -842,7 +896,32 @@ impl Backend for NativeBackend {
             .alive()
             .revoked(false)
             .for_signing()
-            .next()
+        {
+            if is_pqc_sign_algo(key.key().pk_algo()) {
+                pqc_keys.push(key);
+            } else {
+                classic_keys.push(key);
+            }
+        }
+
+        let mut candidates = if matches!(req.pqc_policy, PqcPolicy::Required) {
+            if pqc_keys.is_empty() {
+                return Err(EncryptoError::InvalidInput(
+                    "PQC required but no PQC signing keys found".to_string(),
+                ));
+            }
+            pqc_keys
+        } else if prefer_pqc && !pqc_keys.is_empty() {
+            pqc_keys
+        } else {
+            let mut all = Vec::with_capacity(pqc_keys.len() + classic_keys.len());
+            all.extend(pqc_keys);
+            all.extend(classic_keys);
+            all
+        };
+
+        let key = candidates
+            .pop()
             .ok_or_else(|| EncryptoError::InvalidInput("no signing key found".to_string()))?;
         if key.key().secret().is_encrypted() {
             return Err(EncryptoError::InvalidInput(
@@ -864,6 +943,9 @@ impl Backend for NativeBackend {
         message
             .finalize()
             .map_err(|err| EncryptoError::Backend(format!("finalize failed: {err}")))?;
+        if matches!(req.pqc_policy, PqcPolicy::Required) {
+            ensure_pqc_signature_output(&sink)?;
+        }
         Ok(sink)
     }
 
@@ -982,42 +1064,41 @@ fn resolve_native_home() -> PathBuf {
 
 fn pqc_available() -> bool {
     static PQC_AVAILABLE: OnceLock<bool> = OnceLock::new();
-    *PQC_AVAILABLE.get_or_init(|| {
-        let debug = std::env::var_os("ENCRYPTO_DEBUG").is_some();
-        let suite = CipherSuite::MLDSA65_Ed25519;
-        if let Err(err) = suite.is_supported() {
+    *PQC_AVAILABLE.get_or_init(|| pqc_available_for_suite(CipherSuite::MLDSA65_Ed25519))
+}
+
+fn pqc_available_for_suite(suite: CipherSuite) -> bool {
+    let debug = std::env::var_os("ENCRYPTO_DEBUG").is_some();
+    if let Err(err) = suite.is_supported() {
+        if debug {
+            eprintln!("pqc: {suite:?} unsupported: {err:?}");
+        }
+        return false;
+    }
+    let builder =
+        match CertBuilder::general_purpose(Some("pqc-probe")).set_profile(Profile::RFC9580) {
+            Ok(builder) => builder,
+            Err(_) => return false,
+        };
+    match builder.set_cipher_suite(suite).generate() {
+        Ok(_) => true,
+        Err(err) => {
             if debug {
-                eprintln!(
-                    "pqc: CipherSuite::MLDSA65_Ed25519 unsupported: {err:?}"
-                );
-            }
-            return false;
-        }
-        let builder =
-            match CertBuilder::general_purpose(Some("pqc-probe")).set_profile(Profile::RFC9580) {
-                Ok(builder) => builder,
-                Err(_) => return false,
-            };
-        match builder.set_cipher_suite(suite).generate() {
-            Ok(_) => true,
-            Err(err) => {
-                if debug {
-                    eprintln!("pqc: keygen probe failed: {err:?}");
-                    let mut source = err.source();
-                    while let Some(inner) = source {
-                        eprintln!("pqc: caused by: {inner}");
-                        source = inner.source();
-                    }
+                eprintln!("pqc: {suite:?} keygen probe failed: {err:?}");
+                let mut source = err.source();
+                while let Some(inner) = source {
+                    eprintln!("pqc: caused by: {inner}");
+                    source = inner.source();
                 }
-                false
             }
+            false
         }
-    })
+    }
 }
 
 fn pqc_required_error() -> EncryptoError {
     EncryptoError::Backend(
-        "PQC required but OpenSSL PQC provider not available (install oqs-provider or a PQC-enabled OpenSSL)"
+        "PQC required but PQC algorithms are not available (install OpenSSL 3.5+ with PQC support)"
             .to_string(),
     )
 }
@@ -1048,8 +1129,106 @@ fn cert_matches(cert: &Cert, needle_hex: &str, needle_raw: &str) -> bool {
         .any(|u| u.userid().to_string().to_lowercase().contains(&needle_raw))
 }
 
-fn is_pqc_cert(cert: &Cert) -> bool {
-    let algo = format!("{:?}", cert.primary_key().key().pk_algo());
-    let algo = algo.to_uppercase();
-    algo.contains("MLDSA") || algo.contains("MLKEM") || algo.contains("SLH")
+fn cert_has_pqc_encryption_key(cert: &Cert) -> bool {
+    let policy = StandardPolicy::new();
+    cert.keys()
+        .with_policy(&policy, None)
+        .supported()
+        .alive()
+        .revoked(false)
+        .for_transport_encryption()
+        .any(|key| is_pqc_kem_algo(key.key().pk_algo()))
+}
+
+fn cert_has_pqc_signing_key(cert: &Cert) -> bool {
+    let policy = StandardPolicy::new();
+    cert.keys()
+        .with_policy(&policy, None)
+        .supported()
+        .alive()
+        .revoked(false)
+        .for_signing()
+        .any(|key| is_pqc_sign_algo(key.key().pk_algo()))
+}
+
+fn is_pqc_sign_algo(algo: PublicKeyAlgorithm) -> bool {
+    matches!(
+        algo,
+        PublicKeyAlgorithm::MLDSA65_Ed25519
+            | PublicKeyAlgorithm::MLDSA87_Ed448
+            | PublicKeyAlgorithm::SLHDSA128s
+            | PublicKeyAlgorithm::SLHDSA128f
+            | PublicKeyAlgorithm::SLHDSA256s
+    )
+}
+
+fn is_pqc_kem_algo(algo: PublicKeyAlgorithm) -> bool {
+    matches!(
+        algo,
+        PublicKeyAlgorithm::MLKEM768_X25519 | PublicKeyAlgorithm::MLKEM1024_X448
+    )
+}
+
+fn hash_is_pqc_ok(hash: HashAlgorithm) -> bool {
+    matches!(
+        hash,
+        HashAlgorithm::SHA256
+            | HashAlgorithm::SHA384
+            | HashAlgorithm::SHA512
+            | HashAlgorithm::SHA3_256
+            | HashAlgorithm::SHA3_512
+    )
+}
+
+fn ensure_pqc_encryption_output(bytes: &[u8]) -> Result<(), EncryptoError> {
+    let pile = PacketPile::from_bytes(bytes)
+        .map_err(|err| EncryptoError::Backend(format!("parse output failed: {err}")))?;
+    let mut pkesk_count = 0usize;
+    for packet in pile.descendants() {
+        if let Packet::PKESK(pkesk) = packet {
+            pkesk_count += 1;
+            if !is_pqc_kem_algo(pkesk.pk_algo()) {
+                return Err(EncryptoError::Backend(format!(
+                    "PQC required but non-PQC recipient packet found: {:?}",
+                    pkesk.pk_algo()
+                )));
+            }
+        }
+    }
+    if pkesk_count == 0 {
+        return Err(EncryptoError::Backend(
+            "PQC required but no recipient packets found".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_pqc_signature_output(bytes: &[u8]) -> Result<(), EncryptoError> {
+    let pile = PacketPile::from_bytes(bytes)
+        .map_err(|err| EncryptoError::Backend(format!("parse output failed: {err}")))?;
+    let mut sig_count = 0usize;
+    for packet in pile.descendants() {
+        if let Packet::Signature(sig) = packet {
+            sig_count += 1;
+            let algo = sig.pk_algo();
+            if !is_pqc_sign_algo(algo) {
+                return Err(EncryptoError::Backend(format!(
+                    "PQC required but non-PQC signature found: {:?}",
+                    algo
+                )));
+            }
+            if !hash_is_pqc_ok(sig.hash_algo()) {
+                return Err(EncryptoError::Backend(format!(
+                    "PQC required but weak hash used: {:?}",
+                    sig.hash_algo()
+                )));
+            }
+        }
+    }
+    if sig_count == 0 {
+        return Err(EncryptoError::Backend(
+            "PQC required but no signatures found".to_string(),
+        ));
+    }
+    Ok(())
 }

@@ -11,11 +11,21 @@ Build and run the CLI:
 cargo run -p encrypto-cli -- --help
 ```
 
-Post-quantum mode (builds OpenSSL + oqs-provider locally, then runs with PQC enabled):
+Generate a high-assurance PQC key:
+```bash
+cargo run -p encrypto-cli -- keygen "Alice <alice@example.com>" --pqc-level high
+```
+
+Post-quantum mode (builds OpenSSL locally, then runs with PQC enabled):
 ```bash
 ./scripts/bootstrap-pqc.sh
 source scripts/pqc-env.sh
 cargo run -p encrypto-cli -- --backend native --pqc required info
+```
+
+If you need oqs-provider explicitly:
+```bash
+PQC_WITH_OQS=1 ./scripts/bootstrap-pqc.sh
 ```
 
 ## Contributing

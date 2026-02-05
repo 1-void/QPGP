@@ -14,6 +14,18 @@ impl Default for PqcPolicy {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PqcLevel {
+    Baseline,
+    High,
+}
+
+impl Default for PqcLevel {
+    fn default() -> Self {
+        PqcLevel::Baseline
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyId(pub String);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,6 +44,7 @@ pub struct KeyGenParams {
     pub user_id: UserId,
     pub algo: Option<String>,
     pub pqc_policy: PqcPolicy,
+    pub pqc_level: PqcLevel,
 }
 
 #[derive(Debug, Clone)]
