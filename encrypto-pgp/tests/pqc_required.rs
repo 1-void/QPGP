@@ -7,6 +7,7 @@ mod common;
 use common::{require_pqc, set_home, set_temp_home};
 use encrypto_pgp::NativeBackend;
 use sequoia_openpgp::serialize::SerializeInto;
+use std::ffi::OsString;
 
 fn assert_pqc_encryption(bytes: &[u8]) {
     use openpgp::parse::Parse;
@@ -87,6 +88,32 @@ fn generate_classic_cert_bytes(user_id: &str) -> Vec<u8> {
     cert.as_tsk().to_vec().expect("serialize secret cert")
 }
 
+struct EnvVarGuard {
+    key: &'static str,
+    prev: Option<OsString>,
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        // Safety: tests serialize env changes via set_home().
+        unsafe {
+            match &self.prev {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+}
+
+fn set_env_var(key: &'static str, value: &str) -> EnvVarGuard {
+    let prev = std::env::var_os(key);
+    // Safety: tests serialize env changes via set_home().
+    unsafe {
+        std::env::set_var(key, value);
+    }
+    EnvVarGuard { key, prev }
+}
+
 #[test]
 fn pqc_required_outputs_are_pqc() {
     let _home = set_temp_home();
@@ -153,6 +180,26 @@ fn relative_home_rejected_without_override() {
 }
 
 #[test]
+fn relative_home_allowed_with_override() {
+    let _home = set_home(std::path::Path::new("relative-home-allow"));
+    let _guard = set_env_var("ENCRYPTO_ALLOW_RELATIVE_HOME", "1");
+    let backend = NativeBackend::new(PqcPolicy::Required);
+    let keys = backend.list_keys().expect("list keys");
+    assert!(keys.is_empty(), "expected empty key list");
+}
+
+#[test]
+fn import_empty_bytes_rejected() {
+    let _home = set_temp_home();
+    let backend = NativeBackend::new(PqcPolicy::Required);
+    let err = backend.import_key(&[]).expect_err("expected import error");
+    assert!(
+        err.to_string().contains("no certificates found"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
 fn export_missing_key_fails() {
     let _home = set_temp_home();
     let backend = NativeBackend::new(PqcPolicy::Required);
@@ -166,6 +213,97 @@ fn export_missing_key_fails() {
     assert!(
         err.to_string().contains("key not found"),
         "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn export_secret_requires_secret_key() {
+    let public;
+    let key_id;
+    {
+        let _home = set_temp_home();
+        let backend = NativeBackend::new(PqcPolicy::Required);
+        if !require_pqc(backend.supports_pqc()) {
+            return;
+        }
+        let meta = backend
+            .generate_key(KeyGenParams {
+                user_id: UserId("PublicOnly <public@example.com>".to_string()),
+                algo: None,
+                pqc_policy: PqcPolicy::Required,
+                pqc_level: PqcLevel::Baseline,
+                passphrase: None,
+                allow_unprotected: true,
+            })
+            .expect("keygen");
+        key_id = meta.key_id.clone();
+        public = backend
+            .export_key(&meta.key_id, false, false)
+            .expect("export public");
+    }
+
+    let _home = set_temp_home();
+    let backend = NativeBackend::new(PqcPolicy::Required);
+    if !require_pqc(backend.supports_pqc()) {
+        return;
+    }
+    backend.import_key(&public).expect("import public");
+    let err = backend
+        .export_key(&key_id, true, false)
+        .expect_err("expected secret missing");
+    assert!(
+        err.to_string().contains("secret key not available"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn partial_id_lists_matches() {
+    let _home = set_temp_home();
+    let backend = NativeBackend::new(PqcPolicy::Required);
+    if !require_pqc(backend.supports_pqc()) {
+        return;
+    }
+
+    let _ = backend
+        .generate_key(KeyGenParams {
+            user_id: UserId("MatchOne <match@example.com>".to_string()),
+            algo: None,
+            pqc_policy: PqcPolicy::Required,
+            pqc_level: PqcLevel::Baseline,
+            passphrase: None,
+            allow_unprotected: true,
+        })
+        .expect("keygen");
+
+    let _ = backend
+        .generate_key(KeyGenParams {
+            user_id: UserId("MatchTwo <match@example.com>".to_string()),
+            algo: None,
+            pqc_policy: PqcPolicy::Required,
+            pqc_level: PqcLevel::Baseline,
+            passphrase: None,
+            allow_unprotected: true,
+        })
+        .expect("keygen");
+
+    let err = backend
+        .sign(SignRequest {
+            signer: KeyId("Match".to_string()),
+            message: b"test".to_vec(),
+            armor: false,
+            cleartext: false,
+            pqc_policy: PqcPolicy::Required,
+        })
+        .expect_err("expected partial id error");
+    let message = err.to_string();
+    assert!(
+        message.contains("full fingerprint required; matches:"),
+        "unexpected error: {message}"
+    );
+    assert!(
+        message.contains("MatchOne") && message.contains("MatchTwo"),
+        "expected matches list: {message}"
     );
 }
 

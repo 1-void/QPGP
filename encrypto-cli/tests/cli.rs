@@ -163,6 +163,29 @@ fn keygen_defaults_to_high() {
 }
 
 #[test]
+fn info_reports_pqc_status() {
+    if !pqc_available() || !pqc_high_available() {
+        return;
+    }
+    let home = temp_home();
+    let (code, stdout, stderr) = run_cli(&["info"], &home, None);
+    assert_eq!(code, 0, "info failed: {stderr}");
+    assert!(stdout.contains("backend:"), "missing backend line");
+    assert!(stdout.contains("pqc supported:"), "missing pqc line");
+}
+
+#[test]
+fn doctor_requires_pqc_suites() {
+    if !pqc_available() || !pqc_high_available() {
+        return;
+    }
+    let home = temp_home();
+    let (code, stdout, stderr) = run_cli(&["doctor"], &home, None);
+    assert_eq!(code, 0, "doctor failed: {stderr}");
+    assert!(stdout.contains("pqc algo"), "missing algo output");
+}
+
+#[test]
 fn encrypt_requires_recipient() {
     if !pqc_available() {
         return;
@@ -174,6 +197,59 @@ fn encrypt_requires_recipient() {
         stderr.contains("at least one -r/--recipient"),
         "unexpected stderr: {stderr}"
     );
+}
+
+#[test]
+fn encrypt_decrypt_roundtrip() {
+    if !pqc_available() || !pqc_high_available() {
+        return;
+    }
+    let home = temp_home();
+    let (code, _stdout, stderr) = run_cli(
+        &["keygen", "CLI Enc <cli-enc@example.com>", "--no-passphrase"],
+        &home,
+        None,
+    );
+    assert_eq!(code, 0, "keygen failed: {stderr}");
+
+    let (code, stdout, stderr) = run_cli(&["list-keys", "--secret"], &home, None);
+    assert_eq!(code, 0, "list-keys failed: {stderr}");
+    let fpr = parse_first_fingerprint(&stdout).expect("fingerprint");
+
+    let msg_path = home.join("msg.txt");
+    let cipher_path = home.join("msg.pgp");
+    let out_path = home.join("msg.out");
+    std::fs::write(&msg_path, b"hello encrypt").expect("write msg");
+
+    let (code, _stdout, stderr) = run_cli(
+        &[
+            "encrypt",
+            "-r",
+            &fpr,
+            "--in",
+            msg_path.to_str().unwrap(),
+            "--out",
+            cipher_path.to_str().unwrap(),
+        ],
+        &home,
+        None,
+    );
+    assert_eq!(code, 0, "encrypt failed: {stderr}");
+
+    let (code, _stdout, stderr) = run_cli(
+        &[
+            "decrypt",
+            "--in",
+            cipher_path.to_str().unwrap(),
+            "--out",
+            out_path.to_str().unwrap(),
+        ],
+        &home,
+        None,
+    );
+    assert_eq!(code, 0, "decrypt failed: {stderr}");
+    let output = std::fs::read(&out_path).expect("read output");
+    assert_eq!(output, b"hello encrypt");
 }
 
 #[test]
@@ -489,5 +565,46 @@ fn export_errors_on_unwritable_output() {
     assert!(
         !stderr.trim().is_empty(),
         "expected stderr for unwritable output: {stderr}"
+    );
+}
+
+#[test]
+fn export_secret_requires_secret_key() {
+    if !pqc_available() || !pqc_high_available() {
+        return;
+    }
+    let home = temp_home();
+    let public_path = temp_file_path("public-key");
+    let (code, _stdout, stderr) = run_cli(
+        &[
+            "keygen",
+            "CLI PublicOnly <cli-public@example.com>",
+            "--no-passphrase",
+        ],
+        &home,
+        None,
+    );
+    assert_eq!(code, 0, "keygen failed: {stderr}");
+
+    let (code, stdout, stderr) = run_cli(&["list-keys", "--secret"], &home, None);
+    assert_eq!(code, 0, "list-keys failed: {stderr}");
+    let fpr = parse_first_fingerprint(&stdout).expect("fingerprint");
+
+    let (code, _stdout, stderr) = run_cli(
+        &["export", &fpr, "--out", public_path.to_str().unwrap()],
+        &home,
+        None,
+    );
+    assert_eq!(code, 0, "export failed: {stderr}");
+
+    let home2 = temp_home();
+    let (code, _stdout, stderr) = run_cli(&["import", public_path.to_str().unwrap()], &home2, None);
+    assert_eq!(code, 0, "import failed: {stderr}");
+
+    let (code, _stdout, stderr) = run_cli(&["export", &fpr, "--secret"], &home2, None);
+    assert_ne!(code, 0, "expected secret export failure");
+    assert!(
+        stderr.contains("secret key not available"),
+        "unexpected stderr: {stderr}"
     );
 }
