@@ -1,9 +1,8 @@
 use anyhow::{Result, anyhow};
 use clap::{Parser, Subcommand, ValueEnum};
 use encrypto_core::{
-    Backend, DecryptRequest, EncryptRequest, KeyGenParams, KeyId, PqcLevel, PqcPolicy, SignRequest,
-    UserId,
-    VerifyRequest,
+    Backend, DecryptRequest, EncryptRequest, KeyGenParams, KeyId, PqcLevel, PqcPolicy,
+    OPENPGP_PQC_DRAFT, SignRequest, UserId, VerifyRequest,
 };
 use encrypto_pgp::{
     pqc_algorithms_supported, GpgBackend, GpgConfig, NativeBackend, PinentryMode,
@@ -32,6 +31,9 @@ struct Cli {
 
     #[arg(long = "pqc-disabled", conflicts_with = "pqc")]
     pqc_disabled: bool,
+
+    #[arg(long = "compat", help = "Allow mixed PQC + classical recipients (dangerous)")]
+    compat: bool,
 
     #[arg(long = "gpg-path", global = true, default_value = "gpg")]
     gpg_path: String,
@@ -140,9 +142,9 @@ enum Command {
     },
     #[command(alias = "enc")]
     Encrypt {
-        #[arg(short = 'r', long = "recipient", value_name = "RECIPIENT", num_args = 1..)]
+        #[arg(short = 'r', long = "recipient", value_name = "RECIPIENT")]
         recipients: Vec<String>,
-        #[arg(long = "to", value_name = "RECIPIENT", num_args = 1.., value_delimiter = ',')]
+        #[arg(long = "to", value_name = "RECIPIENT", value_delimiter = ',')]
         to: Vec<String>,
         #[arg(short = 'a', long)]
         armor: bool,
@@ -195,6 +197,9 @@ fn main() -> Result<()> {
         pqc_policy = PqcPolicy::Disabled;
         eprintln!("warning: PQC disabled; outputs may be vulnerable to quantum attacks");
     }
+    if cli.compat {
+        eprintln!("warning: --compat allows mixed PQC/classical recipients; PQ confidentiality is reduced");
+    }
 
     let mut backend_kind = cli.backend;
     if cli.native {
@@ -241,6 +246,7 @@ fn main() -> Result<()> {
         Command::Info => {
             println!("backend: {}", backend.name());
             println!("pqc policy: {}", format_policy(&pqc_policy));
+            println!("openpgp pqc draft: {OPENPGP_PQC_DRAFT}");
             println!("pqc supported: {}", backend.supports_pqc());
             if backend.name() == "native" {
                 for (name, supported) in pqc_algorithms_supported() {
@@ -323,6 +329,7 @@ fn main() -> Result<()> {
                 plaintext,
                 armor,
                 pqc_policy: pqc_policy.clone(),
+                compat: cli.compat,
             };
             let ciphertext = backend.encrypt(request)?;
             write_output(output, &ciphertext)

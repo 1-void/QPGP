@@ -2,6 +2,8 @@
 
 Plan: build a simple, OpenPGP-compatible CLI with post-quantum keys and E2EE, then expand from there.
 
+Spec target: `draft-ietf-openpgp-pqc-17`.
+
 Nobody wants to give enough time to build a post quantum pgp. so i did.
 
 ## Run
@@ -34,6 +36,11 @@ cargo run -p encrypto-cli -- --native verify message.sig message.txt
 Disable PQC (dangerous, for compatibility only):
 ```bash
 cargo run -p encrypto-cli -- --gpg --pqc-disabled list-keys
+```
+
+Allow mixed PQC + classical recipients (dangerous; reduces PQ confidentiality):
+```bash
+cargo run -p encrypto-cli -- --native --compat encrypt -r <KEY_ID> message.txt -o msg.pgp
 ```
 
 If you need oqs-provider explicitly:

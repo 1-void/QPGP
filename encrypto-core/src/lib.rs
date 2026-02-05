@@ -31,6 +31,8 @@ pub struct KeyId(pub String);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UserId(pub String);
 
+pub const OPENPGP_PQC_DRAFT: &str = "draft-ietf-openpgp-pqc-17";
+
 #[derive(Debug, Clone)]
 pub struct KeyMeta {
     pub key_id: KeyId,
@@ -53,6 +55,7 @@ pub struct EncryptRequest {
     pub plaintext: Vec<u8>,
     pub armor: bool,
     pub pqc_policy: PqcPolicy,
+    pub compat: bool,
 }
 
 #[derive(Debug, Clone)]

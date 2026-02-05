@@ -781,6 +781,7 @@ impl Backend for NativeBackend {
         }
 
         if matches!(req.pqc_policy, PqcPolicy::Required)
+            && !req.compat
             && !certs.iter().all(cert_has_pqc_encryption_key)
         {
             return Err(EncryptoError::InvalidInput(
@@ -809,25 +810,46 @@ impl Backend for NativeBackend {
                 }
             }
 
-            let selected = if matches!(req.pqc_policy, PqcPolicy::Required) {
-                if pqc_keys.is_empty() {
+            if req.compat && !matches!(req.pqc_policy, PqcPolicy::Disabled) {
+                if matches!(req.pqc_policy, PqcPolicy::Required) && pqc_keys.is_empty() {
                     return Err(EncryptoError::InvalidInput(
                         "PQC required but recipient has no PQC encryption keys".to_string(),
                     ));
                 }
-                pqc_keys
-            } else if prefer_pqc && !pqc_keys.is_empty() {
-                pqc_keys
-            } else if !classic_keys.is_empty() {
-                classic_keys
+                let pqc_key = pqc_keys.into_iter().next();
+                let classic_key = classic_keys.into_iter().next();
+                if pqc_key.is_none() && classic_key.is_none() {
+                    return Err(EncryptoError::InvalidInput(
+                        "no encryption-capable keys found".to_string(),
+                    ));
+                }
+                if let Some(key) = pqc_key {
+                    recipients.push(key.into());
+                }
+                if let Some(key) = classic_key {
+                    recipients.push(key.into());
+                }
             } else {
-                pqc_keys
-            };
+                let selected = if matches!(req.pqc_policy, PqcPolicy::Required) {
+                    if pqc_keys.is_empty() {
+                        return Err(EncryptoError::InvalidInput(
+                            "PQC required but recipient has no PQC encryption keys".to_string(),
+                        ));
+                    }
+                    pqc_keys
+                } else if prefer_pqc && !pqc_keys.is_empty() {
+                    pqc_keys
+                } else if !classic_keys.is_empty() {
+                    classic_keys
+                } else {
+                    pqc_keys
+                };
 
-            let key = selected.into_iter().next().ok_or_else(|| {
-                EncryptoError::InvalidInput("no encryption-capable keys found".to_string())
-            })?;
-            recipients.push(key.into());
+                let key = selected.into_iter().next().ok_or_else(|| {
+                    EncryptoError::InvalidInput("no encryption-capable keys found".to_string())
+                })?;
+                recipients.push(key.into());
+            }
         }
         if recipients.is_empty() {
             return Err(EncryptoError::InvalidInput(
@@ -857,7 +879,11 @@ impl Backend for NativeBackend {
             .finalize()
             .map_err(|err| EncryptoError::Backend(format!("finalize failed: {err}")))?;
         if matches!(req.pqc_policy, PqcPolicy::Required) {
-            ensure_pqc_encryption_output(&sink)?;
+            if req.compat {
+                ensure_pqc_encryption_has_pqc(&sink)?;
+            } else {
+                ensure_pqc_encryption_output(&sink)?;
+            }
         }
         Ok(sink)
     }
@@ -1211,6 +1237,25 @@ fn ensure_pqc_encryption_output(bytes: &[u8]) -> Result<(), EncryptoError> {
     if pkesk_count == 0 {
         return Err(EncryptoError::Backend(
             "PQC required but no recipient packets found".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_pqc_encryption_has_pqc(bytes: &[u8]) -> Result<(), EncryptoError> {
+    let pile = PacketPile::from_bytes(bytes)
+        .map_err(|err| EncryptoError::Backend(format!("parse output failed: {err}")))?;
+    let mut pqc_count = 0usize;
+    for packet in pile.descendants() {
+        if let Packet::PKESK(pkesk) = packet {
+            if is_pqc_kem_algo(pkesk.pk_algo()) {
+                pqc_count += 1;
+            }
+        }
+    }
+    if pqc_count == 0 {
+        return Err(EncryptoError::Backend(
+            "PQC required but no PQC recipient packets found".to_string(),
         ));
     }
     Ok(())

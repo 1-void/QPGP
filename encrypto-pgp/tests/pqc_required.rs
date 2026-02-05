@@ -102,6 +102,7 @@ fn pqc_required_outputs_are_pqc() {
             plaintext: plaintext.to_vec(),
             armor: false,
             pqc_policy: PqcPolicy::Required,
+            compat: false,
         })
         .expect("encrypt");
     assert_pqc_encryption(&encrypted);
@@ -175,6 +176,7 @@ fn pqc_roundtrip_import_export() {
             plaintext: msg.to_vec(),
             armor: false,
             pqc_policy: PqcPolicy::Required,
+            compat: false,
         })
         .expect("encrypt");
     let dec = backend2
@@ -240,6 +242,7 @@ fn classical_encryption_rejected_when_pqc_required() {
             plaintext: msg.to_vec(),
             armor: false,
             pqc_policy: PqcPolicy::Disabled,
+            compat: false,
         })
         .expect("encrypt");
 
