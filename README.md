@@ -4,6 +4,12 @@ Plan: build a simple, OpenPGP-compatible CLI with post-quantum keys and E2EE, th
 
 Spec target: `draft-ietf-openpgp-pqc-17`.
 
+We follow the draft’s post-quantum OpenPGP profile:
+- Composite (hybrid) algorithms for encryption and signatures (ML-KEM + X25519, ML-DSA + Ed25519/Ed448).
+- v6 key profile for PQC operations.
+- PQC required by default; outputs are validated to avoid classical fallbacks.
+- `--compat` explicitly allows mixed PQC + classical recipients with a warning.
+
 Nobody wants to give enough time to build a post quantum pgp. so i did.
 
 ## Run
