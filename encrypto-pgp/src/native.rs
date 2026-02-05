@@ -22,7 +22,7 @@ use openpgp::serialize::stream::{Armorer, Encryptor, LiteralWriter, Message, Sig
 use openpgp::serialize::{Serialize, SerializeInto};
 use openpgp::types::ReasonForRevocation;
 use openpgp::types::{PublicKeyAlgorithm, SymmetricAlgorithm};
-use openpgp::{Cert, KeyHandle, KeyID, Profile};
+use openpgp::{Cert, KeyHandle, KeyID, Packet, PacketPile, Profile};
 use sequoia_openpgp as openpgp;
 use std::collections::HashMap;
 use std::fs;
@@ -706,10 +706,15 @@ impl Backend for NativeBackend {
             .map_err(|err| EncryptoError::Backend(format!("verifier failed: {err}")))?;
 
         let valid = verifier.verify_bytes(&req.message).is_ok();
+        let signer = if valid {
+            signer_from_signature(&req.signature)
+        } else {
+            None
+        };
 
         Ok(VerifyResult {
             valid,
-            signer: None,
+            signer,
         })
     }
 
@@ -969,4 +974,23 @@ fn cert_matches(cert: &Cert, needle_hex: &str, needle_raw: &str) -> bool {
     let needle_raw = needle_raw.to_lowercase();
     cert.userids()
         .any(|u| u.userid().to_string().to_lowercase().contains(&needle_raw))
+}
+
+fn signer_from_signature(bytes: &[u8]) -> Option<KeyId> {
+    let pile = PacketPile::from_bytes(bytes).ok()?;
+    let mut handles: Vec<String> = Vec::new();
+    for packet in pile.descendants() {
+        if let Packet::Signature(sig) = packet {
+            for issuer in sig.get_issuers() {
+                handles.push(format!("{:X}", issuer));
+            }
+        }
+    }
+    handles.sort();
+    handles.dedup();
+    if handles.len() == 1 {
+        Some(KeyId(handles.remove(0)))
+    } else {
+        None
+    }
 }
