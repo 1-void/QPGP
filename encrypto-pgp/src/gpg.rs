@@ -195,6 +195,7 @@ impl GpgBackend {
                         user_id: None,
                         algo,
                         created_utc,
+                        has_secret: fields[0] == "sec",
                     });
                 }
                 "uid" => {
@@ -321,6 +322,7 @@ impl Backend for GpgBackend {
                 user_id: None,
                 algo: "unknown".to_string(),
                 created_utc: None,
+                has_secret: false,
             });
         }
 
@@ -329,13 +331,16 @@ impl Backend for GpgBackend {
         ))
     }
 
-    fn export_key(&self, id: &KeyId, secret: bool) -> Result<Vec<u8>, EncryptoError> {
+    fn export_key(&self, id: &KeyId, secret: bool, armor: bool) -> Result<Vec<u8>, EncryptoError> {
         self.ensure_pqc_only_backend()?;
-        let args = if secret {
+        let mut args = if secret {
             vec!["--export-secret-keys", &id.0]
         } else {
             vec!["--export", &id.0]
         };
+        if armor {
+            args.push("--armor");
+        }
         let output = self.run_gpg(&args, None)?;
         self.output_or_error(output)
     }
@@ -362,8 +367,12 @@ impl Backend for GpgBackend {
 
     fn sign(&self, req: SignRequest) -> Result<Vec<u8>, EncryptoError> {
         self.ensure_pqc_policy(&req.pqc_policy)?;
-        let mut args = vec!["--detach-sign", "--local-user", &req.signer.0];
-        if req.armor {
+        let mut args = if req.cleartext {
+            vec!["--clearsign", "--local-user", &req.signer.0]
+        } else {
+            vec!["--detach-sign", "--local-user", &req.signer.0]
+        };
+        if req.armor && !req.cleartext {
             args.push("--armor");
         }
         let output = self.run_gpg(&args, Some(&req.message))?;
@@ -372,6 +381,11 @@ impl Backend for GpgBackend {
 
     fn verify(&self, req: VerifyRequest) -> Result<VerifyResult, EncryptoError> {
         self.ensure_pqc_policy(&req.pqc_policy)?;
+        if req.cleartext {
+            return Err(EncryptoError::Backend(
+                "gpg backend is disabled".to_string(),
+            ));
+        }
         let mut message_file = NamedTempFile::new()
             .map_err(|err| EncryptoError::Io(format!("temp file error: {err}")))?;
         message_file
@@ -398,6 +412,7 @@ impl Backend for GpgBackend {
         Ok(VerifyResult {
             valid: output.status.success(),
             signer: Self::parse_verify_status(&output.stdout),
+            message: None,
         })
     }
 

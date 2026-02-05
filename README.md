@@ -54,6 +54,9 @@ cargo run -p encrypto-cli -- encrypt -r <KEY_ID> message.txt -o msg.pgp
 cargo run -p encrypto-cli -- decrypt -o message.txt msg.pgp
 cargo run -p encrypto-cli -- sign -u <KEY_ID> message.txt -o message.sig
 cargo run -p encrypto-cli -- verify message.sig message.txt
+cargo run -p encrypto-cli -- sign -u <KEY_ID> --clearsign message.txt -o message.asc
+cargo run -p encrypto-cli -- verify --clearsigned message.asc
+cargo run -p encrypto-cli -- export <KEY_ID> --armor -o key.asc
 ```
 
 Passphrase note: prefer `--passphrase-file` to avoid exposing secrets in process listings.

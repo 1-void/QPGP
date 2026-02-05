@@ -218,6 +218,7 @@ impl NativeBackend {
             user_id,
             algo,
             created_utc,
+            has_secret: cert.is_tsk(),
         }
     }
 
@@ -435,7 +436,7 @@ impl Backend for NativeBackend {
         Ok(self.meta_from_cert(&certs[0]))
     }
 
-    fn export_key(&self, id: &KeyId, secret: bool) -> Result<Vec<u8>, EncryptoError> {
+    fn export_key(&self, id: &KeyId, secret: bool, armor: bool) -> Result<Vec<u8>, EncryptoError> {
         self.ensure_pqc_only(&self.pqc_policy)?;
         let cert = self.find_cert(id, secret)?;
         if secret && !cert.is_tsk() {
@@ -443,7 +444,7 @@ impl Backend for NativeBackend {
                 "secret key not available".to_string(),
             ));
         }
-        self.export_cert_bytes(&cert, secret, false)
+        self.export_cert_bytes(&cert, secret, armor)
     }
 
     fn encrypt(&self, req: EncryptRequest) -> Result<Vec<u8>, EncryptoError> {
@@ -677,6 +678,25 @@ impl Backend for NativeBackend {
 
         let mut sink = Vec::new();
         let message = Message::new(&mut sink);
+        if req.cleartext {
+            let mut signer = Signer::new(message, keypair)
+                .map_err(|err| EncryptoError::Backend(format!("signer failed: {err}")))?
+                .cleartext()
+                .build()
+                .map_err(|err| EncryptoError::Backend(format!("signer build failed: {err}")))?;
+            signer
+                .write_all(&req.message)
+                .map_err(|err| EncryptoError::Io(format!("write failed: {err}")))?;
+            signer
+                .finalize()
+                .map_err(|err| EncryptoError::Backend(format!("finalize failed: {err}")))?;
+            if matches!(req.pqc_policy, PqcPolicy::Required) {
+                let sig_block = cleartext_signature_block(&sink)?;
+                ensure_pqc_signature_output(&sig_block).map_err(policy_error)?;
+            }
+            return Ok(sink);
+        }
+
         let mut message = self.build_signer(message, req.armor, keypair)?;
         message
             .write_all(&req.message)
@@ -694,12 +714,35 @@ impl Backend for NativeBackend {
         self.ensure_pqc_only(&req.pqc_policy)?;
         let require_pqc = matches!(req.pqc_policy, PqcPolicy::Required)
             || matches!(self.pqc_policy, PqcPolicy::Required);
-        if require_pqc {
-            ensure_pqc_signature_output(&req.signature).map_err(policy_error)?;
-        }
         let certs = self.load_all_certs()?;
         let helper = NativeHelper::new(certs, self.passphrase.clone());
         let p = &StandardPolicy::new();
+        if req.cleartext {
+            let sig_block = cleartext_signature_block(&req.signature)?;
+            if require_pqc {
+                ensure_pqc_signature_output(&sig_block).map_err(policy_error)?;
+            }
+            let mut verifier = openpgp::parse::stream::VerifierBuilder::from_bytes(&req.signature)
+                .map_err(|err| EncryptoError::Backend(format!("parse failed: {err}")))?
+                .with_policy(p, None, helper)
+                .map_err(|err| EncryptoError::Backend(format!("verifier failed: {err}")))?;
+            let mut content = Vec::new();
+            let valid = verifier.read_to_end(&mut content).is_ok();
+            let signer = if valid {
+                signer_from_signature(&sig_block)
+            } else {
+                None
+            };
+            return Ok(VerifyResult {
+                valid,
+                signer,
+                message: if valid { Some(content) } else { None },
+            });
+        }
+
+        if require_pqc {
+            ensure_pqc_signature_output(&req.signature).map_err(policy_error)?;
+        }
         let mut verifier = DetachedVerifierBuilder::from_bytes(&req.signature)
             .map_err(|err| EncryptoError::Backend(format!("parse failed: {err}")))?
             .with_policy(p, None, helper)
@@ -715,6 +758,7 @@ impl Backend for NativeBackend {
         Ok(VerifyResult {
             valid,
             signer,
+            message: None,
         })
     }
 
@@ -993,4 +1037,21 @@ fn signer_from_signature(bytes: &[u8]) -> Option<KeyId> {
     } else {
         None
     }
+}
+
+fn cleartext_signature_block(bytes: &[u8]) -> Result<Vec<u8>, EncryptoError> {
+    const BEGIN: &str = "-----BEGIN PGP SIGNATURE-----";
+    const END: &str = "-----END PGP SIGNATURE-----";
+    let text = String::from_utf8_lossy(bytes);
+    let start = text.find(BEGIN).ok_or_else(|| {
+        EncryptoError::InvalidInput("cleartext signature block not found".to_string())
+    })?;
+    let end_rel = text[start..].find(END).ok_or_else(|| {
+        EncryptoError::InvalidInput("cleartext signature block not found".to_string())
+    })?;
+    let mut end = start + end_rel + END.len();
+    if let Some(rest) = text[end..].find('\n') {
+        end += rest + 1;
+    }
+    Ok(text[start..end].as_bytes().to_vec())
 }

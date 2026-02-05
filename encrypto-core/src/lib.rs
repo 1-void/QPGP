@@ -39,6 +39,7 @@ pub struct KeyMeta {
     pub user_id: Option<UserId>,
     pub algo: String,
     pub created_utc: Option<String>,
+    pub has_secret: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -71,6 +72,7 @@ pub struct SignRequest {
     pub signer: KeyId,
     pub message: Vec<u8>,
     pub armor: bool,
+    pub cleartext: bool,
     pub pqc_policy: PqcPolicy,
 }
 
@@ -78,6 +80,7 @@ pub struct SignRequest {
 pub struct VerifyRequest {
     pub message: Vec<u8>,
     pub signature: Vec<u8>,
+    pub cleartext: bool,
     pub pqc_policy: PqcPolicy,
 }
 
@@ -85,6 +88,7 @@ pub struct VerifyRequest {
 pub struct VerifyResult {
     pub valid: bool,
     pub signer: Option<KeyId>,
+    pub message: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -160,7 +164,7 @@ pub trait Backend {
     fn list_keys(&self) -> Result<Vec<KeyMeta>, EncryptoError>;
     fn generate_key(&self, params: KeyGenParams) -> Result<KeyMeta, EncryptoError>;
     fn import_key(&self, bytes: &[u8]) -> Result<KeyMeta, EncryptoError>;
-    fn export_key(&self, id: &KeyId, secret: bool) -> Result<Vec<u8>, EncryptoError>;
+    fn export_key(&self, id: &KeyId, secret: bool, armor: bool) -> Result<Vec<u8>, EncryptoError>;
 
     fn encrypt(&self, req: EncryptRequest) -> Result<Vec<u8>, EncryptoError>;
     fn decrypt(&self, req: DecryptRequest) -> Result<Vec<u8>, EncryptoError>;

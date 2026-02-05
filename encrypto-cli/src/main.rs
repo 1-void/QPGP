@@ -66,7 +66,12 @@ enum Command {
     Info,
     Doctor,
     #[command(alias = "ls")]
-    ListKeys,
+    ListKeys {
+        #[arg(long, conflicts_with = "public")]
+        secret: bool,
+        #[arg(long, conflicts_with = "secret")]
+        public: bool,
+    },
     #[command(alias = "gen")]
     Keygen {
         user_id: String,
@@ -82,6 +87,8 @@ enum Command {
         key_id: String,
         #[arg(long)]
         secret: bool,
+        #[arg(short = 'a', long)]
+        armor: bool,
         #[arg(long)]
         out: Option<String>,
     },
@@ -113,8 +120,10 @@ enum Command {
     Sign {
         #[arg(short = 'u', long = "local-user", alias = "key")]
         key_id: String,
-        #[arg(short = 'a', long)]
+        #[arg(short = 'a', long, conflicts_with = "clearsign")]
         armor: bool,
+        #[arg(long, conflicts_with = "armor")]
+        clearsign: bool,
         #[arg(long, alias = "in")]
         input: Option<String>,
         #[arg(short = 'o', long, alias = "out")]
@@ -132,6 +141,10 @@ enum Command {
         sig_file: Option<String>,
         #[arg(value_name = "FILE", index = 2)]
         input_file: Option<String>,
+        #[arg(long, conflicts_with_all = ["sig", "sig_file"])]
+        clearsigned: bool,
+        #[arg(short = 'o', long, alias = "out", requires = "clearsigned")]
+        output: Option<String>,
     },
     Revoke {
         key_id: String,
@@ -216,8 +229,13 @@ fn main() -> Result<()> {
             print_env("LD_LIBRARY_PATH");
             Ok(())
         }
-        Command::ListKeys => {
-            let keys = backend.list_keys()?;
+        Command::ListKeys { secret, public } => {
+            let mut keys = backend.list_keys()?;
+            if secret {
+                keys.retain(|key| key.has_secret);
+            } else if public {
+                keys.retain(|key| !key.has_secret);
+            }
             if keys.is_empty() {
                 println!("no keys found");
                 return Ok(());
@@ -229,7 +247,11 @@ fn main() -> Result<()> {
                     .map(|u| u.0.as_str())
                     .unwrap_or("(no user id)");
                 let created = key.created_utc.as_deref().unwrap_or("(unknown)");
-                println!("{} | {} | {} | {}", key.key_id.0, user, key.algo, created);
+                let kind = if key.has_secret { "sec" } else { "pub" };
+                println!(
+                    "{} | {} | {} | {} | {}",
+                    kind, key.key_id.0, user, key.algo, created
+                );
             }
             Ok(())
         }
@@ -264,9 +286,10 @@ fn main() -> Result<()> {
         Command::Export {
             key_id,
             secret,
+            armor,
             out,
         } => {
-            let bytes = backend.export_key(&KeyId(key_id), secret)?;
+            let bytes = backend.export_key(&KeyId(key_id), secret, armor)?;
             write_output(out, &bytes)
         }
         Command::Encrypt {
@@ -310,6 +333,7 @@ fn main() -> Result<()> {
         Command::Sign {
             key_id,
             armor,
+            clearsign,
             input,
             output,
             input_file,
@@ -320,6 +344,7 @@ fn main() -> Result<()> {
                 signer: KeyId(key_id),
                 message,
                 armor,
+                cleartext: clearsign,
                 pqc_policy: pqc_policy.clone(),
             };
             let signature = backend.sign(request)?;
@@ -330,27 +355,55 @@ fn main() -> Result<()> {
             sig,
             sig_file,
             input_file,
+            clearsigned,
+            output,
         } => {
-            let sig_path = merge_arg("signature", sig, sig_file, "--sig", "SIGFILE")?;
-            if sig_path.is_none() {
-                return Err(anyhow!("signature file is required"));
-            }
-            let input_path = merge_arg("input", input, input_file, "--input", "FILE")?;
-            let signature = read_input(sig_path)?;
-            let message = read_input(input_path)?;
-            let result = backend.verify(VerifyRequest {
-                message,
-                signature,
-                pqc_policy: pqc_policy.clone(),
-            })?;
-            if result.valid {
-                match result.signer {
-                    Some(signer) => println!("valid signature from {}", signer.0),
-                    None => println!("valid signature"),
+            if clearsigned {
+                let input_path = merge_arg("input", input, input_file, "--input", "FILE")?;
+                let signature = read_input(input_path)?;
+                let result = backend.verify(VerifyRequest {
+                    message: Vec::new(),
+                    signature,
+                    cleartext: true,
+                    pqc_policy: pqc_policy.clone(),
+                })?;
+                if result.valid {
+                    match result.signer {
+                        Some(signer) => println!("valid signature from {}", signer.0),
+                        None => println!("valid signature"),
+                    }
+                    if let Some(path) = output {
+                        if let Some(message) = result.message {
+                            write_output(Some(path), &message)?;
+                        }
+                    }
+                    Ok(())
+                } else {
+                    Err(anyhow!("invalid signature"))
                 }
-                Ok(())
             } else {
-                Err(anyhow!("invalid signature"))
+                let sig_path = merge_arg("signature", sig, sig_file, "--sig", "SIGFILE")?;
+                if sig_path.is_none() {
+                    return Err(anyhow!("signature file is required"));
+                }
+                let input_path = merge_arg("input", input, input_file, "--input", "FILE")?;
+                let signature = read_input(sig_path)?;
+                let message = read_input(input_path)?;
+                let result = backend.verify(VerifyRequest {
+                    message,
+                    signature,
+                    cleartext: false,
+                    pqc_policy: pqc_policy.clone(),
+                })?;
+                if result.valid {
+                    match result.signer {
+                        Some(signer) => println!("valid signature from {}", signer.0),
+                        None => println!("valid signature"),
+                    }
+                    Ok(())
+                } else {
+                    Err(anyhow!("invalid signature"))
+                }
             }
         }
         Command::Revoke {

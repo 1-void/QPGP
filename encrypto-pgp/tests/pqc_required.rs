@@ -123,6 +123,7 @@ fn pqc_required_outputs_are_pqc() {
             signer: meta.key_id,
             message: plaintext.to_vec(),
             armor: false,
+            cleartext: false,
             pqc_policy: PqcPolicy::Required,
         })
         .expect("sign");
@@ -149,10 +150,10 @@ fn pqc_roundtrip_import_export() {
         .expect("keygen");
 
     let secret = backend
-        .export_key(&meta.key_id, true)
+        .export_key(&meta.key_id, true, false)
         .expect("export secret");
     let public = backend
-        .export_key(&meta.key_id, false)
+        .export_key(&meta.key_id, false, false)
         .expect("export public");
 
     let _home2 = set_temp_home();
@@ -169,6 +170,7 @@ fn pqc_roundtrip_import_export() {
             signer: meta.key_id.clone(),
             message: msg.to_vec(),
             armor: false,
+            cleartext: false,
             pqc_policy: PqcPolicy::Required,
         })
         .expect("sign");
@@ -176,6 +178,7 @@ fn pqc_roundtrip_import_export() {
         .verify(VerifyRequest {
             message: msg.to_vec(),
             signature: sig,
+            cleartext: false,
             pqc_policy: PqcPolicy::Required,
         })
         .expect("verify");
@@ -197,6 +200,54 @@ fn pqc_roundtrip_import_export() {
         })
         .expect("decrypt");
     assert_eq!(dec, msg);
+}
+
+#[test]
+fn cleartext_sign_verify_roundtrip() {
+    let _home = set_temp_home();
+    let backend = NativeBackend::new(PqcPolicy::Required);
+    if !require_pqc(backend.supports_pqc()) {
+        return;
+    }
+
+    let meta = backend
+        .generate_key(KeyGenParams {
+            user_id: UserId("Cleartext <clear@example.com>".to_string()),
+            algo: None,
+            pqc_policy: PqcPolicy::Required,
+            pqc_level: PqcLevel::Baseline,
+            passphrase: None,
+            allow_unprotected: true,
+        })
+        .expect("keygen");
+
+    let msg = b"cleartext message\nsecond line";
+    let signed = backend
+        .sign(SignRequest {
+            signer: meta.key_id.clone(),
+            message: msg.to_vec(),
+            armor: false,
+            cleartext: true,
+            pqc_policy: PqcPolicy::Required,
+        })
+        .expect("clearsign");
+
+    let result = backend
+        .verify(VerifyRequest {
+            message: Vec::new(),
+            signature: signed,
+            cleartext: true,
+            pqc_policy: PqcPolicy::Required,
+        })
+        .expect("verify");
+
+    assert!(result.valid, "cleartext signature invalid");
+    let verified = result.message.expect("missing cleartext message");
+    let verified_text = String::from_utf8_lossy(&verified);
+    assert!(
+        verified_text.contains("cleartext message"),
+        "cleartext message content missing"
+    );
 }
 
 #[test]
@@ -275,7 +326,7 @@ fn native_passphrase_encrypts_secret_keys() {
         .expect("keygen");
 
     let secret = backend
-        .export_key(&meta.key_id, true)
+        .export_key(&meta.key_id, true, false)
         .expect("export secret");
     {
         use openpgp::parse::Parse;
@@ -294,6 +345,7 @@ fn native_passphrase_encrypts_secret_keys() {
             signer: meta.key_id.clone(),
             message: msg.to_vec(),
             armor: false,
+            cleartext: false,
             pqc_policy: PqcPolicy::Required,
         })
         .expect("sign");
@@ -301,6 +353,7 @@ fn native_passphrase_encrypts_secret_keys() {
     let result = backend.verify(VerifyRequest {
         message: msg.to_vec(),
         signature: sig,
+        cleartext: false,
         pqc_policy: PqcPolicy::Required,
     });
     assert!(result.expect("verify").valid, "signature did not verify");
@@ -310,6 +363,7 @@ fn native_passphrase_encrypts_secret_keys() {
         signer: meta.key_id,
         message: msg.to_vec(),
         armor: false,
+        cleartext: false,
         pqc_policy: PqcPolicy::Required,
     });
     assert!(sign_without.is_err(), "expected passphrase error");

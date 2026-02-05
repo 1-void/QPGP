@@ -92,7 +92,7 @@ fn rotate_creates_new_key_and_revokes_old() {
     );
 
     let old_public = backend
-        .export_key(&meta.key_id, false)
+        .export_key(&meta.key_id, false, false)
         .expect("export old cert");
     assert_revoked(&old_public);
 }
