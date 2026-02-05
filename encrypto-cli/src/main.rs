@@ -21,8 +21,17 @@ struct Cli {
     #[arg(long, value_enum, default_value_t = BackendKind::Gpg)]
     backend: BackendKind,
 
+    #[arg(long, conflicts_with = "backend")]
+    native: bool,
+
+    #[arg(long, conflicts_with = "backend")]
+    gpg: bool,
+
     #[arg(long, value_enum, default_value_t = PqcMode::Preferred)]
     pqc: PqcMode,
+
+    #[arg(long = "pqc-required", short = 'Q', conflicts_with = "pqc")]
+    pqc_required: bool,
 
     #[arg(long = "gpg-path", global = true, default_value = "gpg")]
     gpg_path: String,
@@ -109,7 +118,9 @@ impl From<PqcLevelArg> for PqcLevel {
 #[derive(Subcommand, Debug)]
 enum Command {
     Info,
+    #[command(alias = "ls")]
     ListKeys,
+    #[command(alias = "gen")]
     Keygen {
         user_id: String,
         #[arg(long)]
@@ -127,43 +138,70 @@ enum Command {
         #[arg(long)]
         out: Option<String>,
     },
+    #[command(alias = "enc")]
     Encrypt {
-        #[arg(long = "to")]
+        #[arg(short = 'r', long = "recipient", value_name = "RECIPIENT", num_args = 1..)]
         recipients: Vec<String>,
-        #[arg(long)]
+        #[arg(long = "to", value_name = "RECIPIENT", num_args = 1.., value_delimiter = ',')]
+        to: Vec<String>,
+        #[arg(short = 'a', long)]
         armor: bool,
-        #[arg(long)]
+        #[arg(long, alias = "in")]
         input: Option<String>,
-        #[arg(long)]
+        #[arg(short = 'o', long, alias = "out")]
         output: Option<String>,
+        #[arg(value_name = "FILE", index = 1)]
+        input_file: Option<String>,
     },
+    #[command(alias = "dec")]
     Decrypt {
-        #[arg(long)]
+        #[arg(long, alias = "in")]
         input: Option<String>,
-        #[arg(long)]
+        #[arg(short = 'o', long, alias = "out")]
         output: Option<String>,
+        #[arg(value_name = "FILE", index = 1)]
+        input_file: Option<String>,
     },
+    #[command(alias = "sig")]
     Sign {
-        #[arg(long)]
+        #[arg(short = 'u', long = "local-user", alias = "key")]
         key_id: String,
-        #[arg(long)]
+        #[arg(short = 'a', long)]
         armor: bool,
-        #[arg(long)]
+        #[arg(long, alias = "in")]
         input: Option<String>,
-        #[arg(long)]
+        #[arg(short = 'o', long, alias = "out")]
         output: Option<String>,
+        #[arg(value_name = "FILE", index = 1)]
+        input_file: Option<String>,
     },
+    #[command(alias = "ver")]
     Verify {
-        #[arg(long)]
+        #[arg(long, alias = "in")]
         input: Option<String>,
-        #[arg(long)]
+        #[arg(long, alias = "sig")]
         sig: Option<String>,
+        #[arg(value_name = "SIGFILE", index = 1)]
+        sig_file: Option<String>,
+        #[arg(value_name = "FILE", index = 2)]
+        input_file: Option<String>,
     },
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let pqc_policy: PqcPolicy = cli.pqc.into();
+    let mut pqc_policy: PqcPolicy = cli.pqc.into();
+    if cli.pqc_required {
+        pqc_policy = PqcPolicy::Required;
+    }
+
+    let mut backend_kind = cli.backend;
+    if cli.native {
+        backend_kind = BackendKind::Native;
+    }
+    if cli.gpg {
+        backend_kind = BackendKind::Gpg;
+    }
 
     if cli.gpg_passphrase.is_some() {
         eprintln!("warning: --gpg-passphrase can expose secrets in process listings");
@@ -186,7 +224,7 @@ fn main() -> Result<()> {
         batch: cli.gpg_batch,
     };
 
-    let backend: Box<dyn Backend> = match cli.backend {
+    let backend: Box<dyn Backend> = match backend_kind {
         BackendKind::Gpg => Box::new(GpgBackend::new(gpg_config)),
         BackendKind::Native => Box::new(NativeBackend::new(pqc_policy.clone())),
     };
@@ -258,16 +296,29 @@ fn main() -> Result<()> {
         }
         Command::Encrypt {
             recipients,
+            to,
             armor,
             input,
             output,
+            input_file,
         } => {
-            if recipients.is_empty() {
-                return Err(anyhow!("at least one --to recipient is required"));
+            let mut all_recipients = recipients;
+            all_recipients.extend(to);
+            if all_recipients.is_empty() {
+                return Err(anyhow!(
+                    "at least one -r/--recipient (or --to) is required"
+                ));
             }
-            let plaintext = read_input(input)?;
+            let input_path = merge_arg(
+                "input",
+                input,
+                input_file,
+                "--input",
+                "FILE",
+            )?;
+            let plaintext = read_input(input_path)?;
             let request = EncryptRequest {
-                recipients: recipients.into_iter().map(KeyId).collect(),
+                recipients: all_recipients.into_iter().map(KeyId).collect(),
                 plaintext,
                 armor,
                 pqc_policy: pqc_policy.clone(),
@@ -275,8 +326,19 @@ fn main() -> Result<()> {
             let ciphertext = backend.encrypt(request)?;
             write_output(output, &ciphertext)
         }
-        Command::Decrypt { input, output } => {
-            let ciphertext = read_input(input)?;
+        Command::Decrypt {
+            input,
+            output,
+            input_file,
+        } => {
+            let input_path = merge_arg(
+                "input",
+                input,
+                input_file,
+                "--input",
+                "FILE",
+            )?;
+            let ciphertext = read_input(input_path)?;
             let plaintext = backend.decrypt(DecryptRequest {
                 ciphertext,
                 pqc_policy: pqc_policy.clone(),
@@ -288,8 +350,16 @@ fn main() -> Result<()> {
             armor,
             input,
             output,
+            input_file,
         } => {
-            let message = read_input(input)?;
+            let input_path = merge_arg(
+                "input",
+                input,
+                input_file,
+                "--input",
+                "FILE",
+            )?;
+            let message = read_input(input_path)?;
             let request = SignRequest {
                 signer: KeyId(key_id),
                 message,
@@ -299,9 +369,19 @@ fn main() -> Result<()> {
             let signature = backend.sign(request)?;
             write_output(output, &signature)
         }
-        Command::Verify { input, sig } => {
-            let message = read_input(input)?;
-            let signature = read_input(sig)?;
+        Command::Verify {
+            input,
+            sig,
+            sig_file,
+            input_file,
+        } => {
+            let sig_path = merge_arg("signature", sig, sig_file, "--sig", "SIGFILE")?;
+            if sig_path.is_none() {
+                return Err(anyhow!("signature file is required"));
+            }
+            let input_path = merge_arg("input", input, input_file, "--input", "FILE")?;
+            let signature = read_input(sig_path)?;
+            let message = read_input(input_path)?;
             let result = backend.verify(VerifyRequest {
                 message,
                 signature,
@@ -322,6 +402,11 @@ fn main() -> Result<()> {
 
 fn read_input(path: Option<String>) -> Result<Vec<u8>> {
     match path {
+        Some(path) if path == "-" => {
+            let mut buf = Vec::new();
+            io::stdin().read_to_end(&mut buf)?;
+            Ok(buf)
+        }
         Some(path) => Ok(fs::read(path)?),
         None => {
             let mut buf = Vec::new();
@@ -344,6 +429,21 @@ fn write_output(path: Option<String>, bytes: &[u8]) -> Result<()> {
             Ok(())
         }
     }
+}
+
+fn merge_arg(
+    label: &str,
+    primary: Option<String>,
+    secondary: Option<String>,
+    primary_name: &str,
+    secondary_name: &str,
+) -> Result<Option<String>> {
+    if primary.is_some() && secondary.is_some() {
+        return Err(anyhow!(
+            "use either {primary_name} or {secondary_name} for {label}"
+        ));
+    }
+    Ok(primary.or(secondary))
 }
 
 fn format_policy(policy: &PqcPolicy) -> &'static str {

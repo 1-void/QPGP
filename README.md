@@ -20,7 +20,15 @@ Post-quantum mode (builds OpenSSL locally, then runs with PQC enabled):
 ```bash
 ./scripts/bootstrap-pqc.sh
 source scripts/pqc-env.sh
-cargo run -p encrypto-cli -- --backend native --pqc required info
+cargo run -p encrypto-cli -- --native --pqc-required info
+```
+
+GPG-style basics:
+```bash
+cargo run -p encrypto-cli -- --native --pqc-required encrypt -r <KEY_ID> message.txt -o msg.pgp
+cargo run -p encrypto-cli -- --native --pqc-required decrypt -o message.txt msg.pgp
+cargo run -p encrypto-cli -- --native --pqc-required sign -u <KEY_ID> message.txt -o message.sig
+cargo run -p encrypto-cli -- --native --pqc-required verify message.sig message.txt
 ```
 
 If you need oqs-provider explicitly:
