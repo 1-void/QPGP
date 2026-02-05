@@ -1,28 +1,18 @@
 use std::fmt;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum PqcPolicy {
     Disabled,
     Preferred,
+    #[default]
     Required,
 }
 
-impl Default for PqcPolicy {
-    fn default() -> Self {
-        PqcPolicy::Required
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum PqcLevel {
+    #[default]
     Baseline,
     High,
-}
-
-impl Default for PqcLevel {
-    fn default() -> Self {
-        PqcLevel::Baseline
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
