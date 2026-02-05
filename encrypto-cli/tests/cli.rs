@@ -33,6 +33,9 @@ fn run_cli(args: &[&str], home: &PathBuf, stdin: Option<&[u8]>) -> (i32, String,
         })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if let Ok(profile) = std::env::var("LLVM_PROFILE_FILE") {
+        cmd.env("LLVM_PROFILE_FILE", profile);
+    }
 
     let mut child = cmd.spawn().expect("spawn encrypto-cli");
     if let Some(input) = stdin {
@@ -44,6 +47,16 @@ fn run_cli(args: &[&str], home: &PathBuf, stdin: Option<&[u8]>) -> (i32, String,
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     (code, stdout, stderr)
+}
+
+fn parse_first_fingerprint(output: &str) -> Option<String> {
+    for line in output.lines() {
+        let parts: Vec<&str> = line.split('|').map(|s| s.trim()).collect();
+        if parts.len() >= 2 && (parts[0] == "sec" || parts[0] == "pub") {
+            return Some(parts[1].to_string());
+        }
+    }
+    None
 }
 
 #[test]
@@ -129,4 +142,58 @@ fn keygen_defaults_to_high() {
         stdout.contains("MLDSA87_Ed448"),
         "expected high-level algorithm in list-keys output: {stdout}"
     );
+}
+
+#[test]
+fn sign_and_verify_roundtrip() {
+    if !pqc_available() {
+        return;
+    }
+    let home = temp_home();
+    let (code, _stdout, stderr) = run_cli(
+        &[
+            "keygen",
+            "CLI Sign <cli-sign@example.com>",
+            "--no-passphrase",
+        ],
+        &home,
+        None,
+    );
+    assert_eq!(code, 0, "keygen failed: {stderr}");
+
+    let (code, stdout, stderr) = run_cli(&["list-keys", "--secret"], &home, None);
+    assert_eq!(code, 0, "list-keys failed: {stderr}");
+    let fpr = parse_first_fingerprint(&stdout).expect("fingerprint");
+
+    let msg_path = home.join("msg.txt");
+    let sig_path = home.join("msg.sig");
+    std::fs::write(&msg_path, b"hello cli").expect("write msg");
+
+    let (code, _stdout, stderr) = run_cli(
+        &[
+            "sign",
+            "-u",
+            &fpr,
+            "--in",
+            msg_path.to_str().unwrap(),
+            "--out",
+            sig_path.to_str().unwrap(),
+        ],
+        &home,
+        None,
+    );
+    assert_eq!(code, 0, "sign failed: {stderr}");
+
+    let (code, _stdout, stderr) = run_cli(
+        &[
+            "verify",
+            "--signer",
+            &fpr,
+            sig_path.to_str().unwrap(),
+            msg_path.to_str().unwrap(),
+        ],
+        &home,
+        None,
+    );
+    assert_eq!(code, 0, "verify failed: {stderr}");
 }

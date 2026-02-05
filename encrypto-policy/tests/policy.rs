@@ -1,13 +1,15 @@
 use encrypto_policy::{
-    ensure_pqc_encryption_output, ensure_pqc_signature_output, is_pqc_kem_algo, is_pqc_sign_algo,
-    pqc_kem_key_version_ok, pqc_sign_key_version_ok,
+    cert_has_pqc_encryption_key, cert_has_pqc_signing_key, cert_is_pqc_only,
+    ensure_pqc_encryption_has_pqc, ensure_pqc_encryption_output, ensure_pqc_signature_output,
+    hash_is_pqc_ok, is_pqc_kem_algo, is_pqc_sign_algo, pqc_kem_key_version_ok,
+    pqc_sign_key_version_ok,
 };
 use sequoia_openpgp as openpgp;
 use sequoia_openpgp::KeyHandle;
 use sequoia_openpgp::cert::prelude::*;
 use sequoia_openpgp::policy::StandardPolicy;
 use sequoia_openpgp::serialize::stream::{Encryptor, LiteralWriter, Message, Recipient, Signer};
-use sequoia_openpgp::types::{AEADAlgorithm, Features, PublicKeyAlgorithm};
+use sequoia_openpgp::types::{AEADAlgorithm, Features, HashAlgorithm, PublicKeyAlgorithm};
 use std::io::Write;
 
 #[test]
@@ -50,10 +52,22 @@ fn pqc_available() -> bool {
     CipherSuite::MLDSA65_Ed25519.is_supported().is_ok()
 }
 
+fn classic_available() -> bool {
+    CipherSuite::Cv25519.is_supported().is_ok()
+}
+
 fn generate_pqc_cert() -> openpgp::Result<openpgp::Cert> {
     let (cert, _rev) = CertBuilder::general_purpose(Some("Policy Test <policy@example.com>"))
         .set_profile(openpgp::Profile::RFC9580)?
         .set_cipher_suite(CipherSuite::MLDSA65_Ed25519)
+        .generate()?;
+    Ok(cert)
+}
+
+fn generate_classic_cert() -> openpgp::Result<openpgp::Cert> {
+    let (cert, _rev) = CertBuilder::general_purpose(Some("Classic <classic@example.com>"))
+        .set_profile(openpgp::Profile::RFC9580)?
+        .set_cipher_suite(CipherSuite::Cv25519)
         .generate()?;
     Ok(cert)
 }
@@ -154,4 +168,63 @@ fn policy_accepts_single_signature() {
     let cert = generate_pqc_cert().expect("cert");
     let sig = sign_detached(&cert, b"hello").expect("sign");
     ensure_pqc_signature_output(&sig).expect("expected single signature to pass");
+}
+
+#[test]
+fn hash_policy_allows_strong_hashes() {
+    assert!(hash_is_pqc_ok(HashAlgorithm::SHA256));
+    assert!(hash_is_pqc_ok(HashAlgorithm::SHA3_256));
+    assert!(!hash_is_pqc_ok(HashAlgorithm::SHA1));
+}
+
+#[test]
+fn cert_pqc_detection() {
+    if !pqc_available() {
+        return;
+    }
+    let cert = generate_pqc_cert().expect("cert");
+    assert!(cert_has_pqc_encryption_key(&cert));
+    assert!(cert_has_pqc_signing_key(&cert));
+    assert!(cert_is_pqc_only(&cert));
+}
+
+#[test]
+fn cert_classic_detection() {
+    if !classic_available() {
+        return;
+    }
+    let cert = generate_classic_cert().expect("classic cert");
+    assert!(!cert_has_pqc_encryption_key(&cert));
+    assert!(!cert_has_pqc_signing_key(&cert));
+    assert!(!cert_is_pqc_only(&cert));
+}
+
+#[test]
+fn policy_requires_pqc_recipient_packets() {
+    if !pqc_available() {
+        return;
+    }
+    let cert = generate_pqc_cert().expect("cert");
+    let ciphertext = encrypt_with_features(&cert, Features::sequoia(), true).expect("encrypt");
+    ensure_pqc_encryption_has_pqc(&ciphertext).expect("expected PQC recipient");
+
+    if !classic_available() {
+        return;
+    }
+    let classic = generate_classic_cert().expect("classic cert");
+    let ciphertext =
+        encrypt_with_features(&classic, Features::empty(), false).expect("classic encrypt");
+    let result = ensure_pqc_encryption_has_pqc(&ciphertext);
+    assert!(result.is_err(), "expected classic recipients to fail");
+}
+
+#[test]
+fn policy_rejects_classic_signature() {
+    if !classic_available() {
+        return;
+    }
+    let cert = generate_classic_cert().expect("classic cert");
+    let sig = sign_detached(&cert, b"classic").expect("sign");
+    let result = ensure_pqc_signature_output(&sig);
+    assert!(result.is_err(), "expected classic signature to fail");
 }

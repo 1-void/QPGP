@@ -615,3 +615,154 @@ fn enforce_expected_signer(expected: Option<&str>, result: &VerifyResult) -> Res
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+    use std::sync::Mutex;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn with_env_var<F: FnOnce()>(key: &str, value: Option<&str>, f: F) {
+        let _lock = ENV_LOCK.lock().expect("env lock poisoned");
+        let prev = std::env::var_os(key);
+        // Safety: tests serialize env changes via ENV_LOCK.
+        unsafe {
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
+        f();
+        // Safety: tests serialize env changes via ENV_LOCK.
+        unsafe {
+            match prev {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
+    }
+
+    fn temp_path(name: &str) -> String {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        std::env::temp_dir()
+            .join(format!("encrypto-cli-test-{name}-{nanos}"))
+            .to_string_lossy()
+            .to_string()
+    }
+
+    #[test]
+    fn normalize_fingerprint_accepts_valid_inputs() {
+        let short = "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+        let normalized = normalize_fingerprint(short).expect("normalize");
+        assert_eq!(normalized, "DEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF");
+
+        let spaced = "ab cd ef 12 34 56 78 90 ab cd ef 12 34 56 78 90 ab cd ef 12";
+        let normalized = normalize_fingerprint(spaced).expect("normalize");
+        assert_eq!(normalized, "ABCDEF1234567890ABCDEF1234567890ABCDEF12");
+    }
+
+    #[test]
+    fn normalize_fingerprint_rejects_invalid_inputs() {
+        let err = normalize_fingerprint("not-hex").expect_err("invalid");
+        assert!(err.to_string().contains("fingerprint must be 40 or 64"));
+
+        let err = normalize_fingerprint("abcd").expect_err("invalid");
+        assert!(err.to_string().contains("fingerprint must be 40 or 64"));
+    }
+
+    #[test]
+    fn merge_arg_enforces_exclusive_args() {
+        let err = merge_arg("input", Some("a".into()), Some("b".into()), "--in", "FILE")
+            .expect_err("expected conflict");
+        assert!(err.to_string().contains("use either"));
+
+        let merged = merge_arg("input", Some("a".into()), None, "--in", "FILE").expect("merge");
+        assert_eq!(merged.as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn max_input_bytes_env_override() {
+        with_env_var("ENCRYPTO_MAX_INPUT_BYTES", Some("1234"), || {
+            let limit = max_input_bytes().expect("limit");
+            assert_eq!(limit, 1234);
+        });
+    }
+
+    #[test]
+    fn max_input_bytes_invalid_env() {
+        with_env_var("ENCRYPTO_MAX_INPUT_BYTES", Some("not-a-number"), || {
+            let err = max_input_bytes().expect_err("expected error");
+            assert!(err.to_string().contains("invalid ENCRYPTO_MAX_INPUT_BYTES"));
+        });
+    }
+
+    #[test]
+    fn read_to_end_limited_enforces_limit() {
+        let data = vec![1u8; 10];
+        let err = read_to_end_limited(Cursor::new(&data), 5).expect_err("expected limit error");
+        assert!(err.to_string().contains("input exceeds size limit"));
+
+        let ok = read_to_end_limited(Cursor::new(&data), 20).expect("read");
+        assert_eq!(ok, data);
+    }
+
+    #[test]
+    fn read_passphrase_file_trims_newlines() {
+        let path = temp_path("passphrase");
+        std::fs::write(&path, b"secret\n").expect("write passphrase");
+        let passphrase = read_passphrase_file(&path).expect("read");
+        assert_eq!(passphrase, "secret");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn write_file_secure_writes_and_sets_perms() {
+        let path = temp_path("write");
+        write_file_secure(&path, b"data").expect("write");
+        let bytes = std::fs::read(&path).expect("read");
+        assert_eq!(bytes, b"data");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path)
+                .expect("metadata")
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn enforce_expected_signer_checks_identity() {
+        let result = VerifyResult {
+            valid: true,
+            signer: Some(KeyId("DEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF".into())),
+            message: None,
+        };
+        enforce_expected_signer(Some("DEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF"), &result)
+            .expect("expected match");
+
+        let err =
+            enforce_expected_signer(Some("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"), &result)
+                .expect_err("expected mismatch");
+        assert!(err.to_string().contains("expected"));
+
+        let result = VerifyResult {
+            valid: true,
+            signer: None,
+            message: None,
+        };
+        let err =
+            enforce_expected_signer(Some("DEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF"), &result)
+                .expect_err("expected missing signer");
+        assert!(err.to_string().contains("signer"));
+    }
+}
