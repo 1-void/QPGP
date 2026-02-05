@@ -178,7 +178,10 @@ fn pqc_roundtrip_import_export() {
         })
         .expect("encrypt");
     let dec = backend2
-        .decrypt(DecryptRequest { ciphertext: enc })
+        .decrypt(DecryptRequest {
+            ciphertext: enc,
+            pqc_policy: PqcPolicy::Required,
+        })
         .expect("decrypt");
     assert_eq!(dec, msg);
 }
@@ -214,4 +217,36 @@ fn classical_signature_rejected_when_pqc_required() {
         pqc_policy: PqcPolicy::Required,
     });
     assert!(result.is_err(), "expected PQC-required verify to fail");
+}
+
+#[test]
+fn classical_encryption_rejected_when_pqc_required() {
+    let _home = set_temp_home();
+    let backend = NativeBackend::new(PqcPolicy::Disabled);
+
+    let meta = backend
+        .generate_key(KeyGenParams {
+            user_id: UserId("Classic Encrypt <classic-enc@example.com>".to_string()),
+            algo: None,
+            pqc_policy: PqcPolicy::Disabled,
+            pqc_level: PqcLevel::Baseline,
+        })
+        .expect("keygen");
+
+    let msg = b"classic encryption";
+    let enc = backend
+        .encrypt(EncryptRequest {
+            recipients: vec![meta.key_id.clone()],
+            plaintext: msg.to_vec(),
+            armor: false,
+            pqc_policy: PqcPolicy::Disabled,
+        })
+        .expect("encrypt");
+
+    let required_backend = NativeBackend::new(PqcPolicy::Required);
+    let result = required_backend.decrypt(DecryptRequest {
+        ciphertext: enc,
+        pqc_policy: PqcPolicy::Required,
+    });
+    assert!(result.is_err(), "expected PQC-required decrypt to fail");
 }

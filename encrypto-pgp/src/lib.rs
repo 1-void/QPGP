@@ -366,6 +366,7 @@ impl Backend for GpgBackend {
     }
 
     fn decrypt(&self, req: DecryptRequest) -> Result<Vec<u8>, EncryptoError> {
+        self.ensure_pqc_policy(&req.pqc_policy)?;
         let output = self.run_gpg(&["--decrypt"], Some(&req.ciphertext))?;
         self.output_or_error(output)
     }
@@ -817,16 +818,16 @@ impl Backend for NativeBackend {
                 pqc_keys
             } else if prefer_pqc && !pqc_keys.is_empty() {
                 pqc_keys
+            } else if !classic_keys.is_empty() {
+                classic_keys
             } else {
-                let mut all = Vec::with_capacity(pqc_keys.len() + classic_keys.len());
-                all.extend(pqc_keys);
-                all.extend(classic_keys);
-                all
+                pqc_keys
             };
 
-            for key in selected {
-                recipients.push(key.into());
-            }
+            let key = selected.into_iter().next().ok_or_else(|| {
+                EncryptoError::InvalidInput("no encryption-capable keys found".to_string())
+            })?;
+            recipients.push(key.into());
         }
         if recipients.is_empty() {
             return Err(EncryptoError::InvalidInput(
@@ -862,6 +863,12 @@ impl Backend for NativeBackend {
     }
 
     fn decrypt(&self, req: DecryptRequest) -> Result<Vec<u8>, EncryptoError> {
+        if matches!(req.pqc_policy, PqcPolicy::Required) && !self.supports_pqc() {
+            return Err(pqc_required_error());
+        }
+        if matches!(req.pqc_policy, PqcPolicy::Required) {
+            ensure_pqc_encryption_output(&req.ciphertext)?;
+        }
         let certs = self.load_all_certs()?;
         let helper = NativeHelper::new(certs);
         let p = &StandardPolicy::new();

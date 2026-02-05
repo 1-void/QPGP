@@ -58,6 +58,7 @@ pub struct EncryptRequest {
 #[derive(Debug, Clone)]
 pub struct DecryptRequest {
     pub ciphertext: Vec<u8>,
+    pub pqc_policy: PqcPolicy,
 }
 
 #[derive(Debug, Clone)]

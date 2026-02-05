@@ -277,7 +277,10 @@ fn main() -> Result<()> {
         }
         Command::Decrypt { input, output } => {
             let ciphertext = read_input(input)?;
-            let plaintext = backend.decrypt(DecryptRequest { ciphertext })?;
+            let plaintext = backend.decrypt(DecryptRequest {
+                ciphertext,
+                pqc_policy: pqc_policy.clone(),
+            })?;
             write_output(output, &plaintext)
         }
         Command::Sign {
