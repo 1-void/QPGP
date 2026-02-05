@@ -29,3 +29,37 @@ jobs:
         cargo build --verbose
         cargo run -p encrypto-cli -- doctor
         cargo test --verbose
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Determine version
+      id: version
+      run: |
+        set -euo pipefail
+        version=$(awk -F' *= *' '$1=="version"{gsub(/"/,"",$2); print $2; exit}' encrypto-cli/Cargo.toml)
+        if [[ -z "$version" || "$version" == "null" ]]; then
+          echo "failed to resolve version from encrypto-cli" >&2
+          exit 1
+        fi
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+    - name: Create tag and release
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        set -euo pipefail
+        version="${{ steps.version.outputs.version }}"
+        tag="v${version}"
+        git fetch --tags
+        if git rev-parse "$tag" >/dev/null 2>&1; then
+          echo "tag $tag already exists; skipping release"
+          exit 0
+        fi
+        gh release create "$tag" --generate-notes
