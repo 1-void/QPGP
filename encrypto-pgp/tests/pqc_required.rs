@@ -432,6 +432,29 @@ fn cleartext_sign_verify_roundtrip() {
 }
 
 #[test]
+fn cleartext_verify_requires_signature_block() {
+    let _home = set_temp_home();
+    let backend = NativeBackend::new(PqcPolicy::Required);
+    if !require_pqc(backend.supports_pqc()) {
+        return;
+    }
+
+    let err = backend
+        .verify(VerifyRequest {
+            message: Vec::new(),
+            signature: b"not a cleartext signature".to_vec(),
+            cleartext: true,
+            pqc_policy: PqcPolicy::Required,
+        })
+        .expect_err("expected cleartext block error");
+    assert!(
+        err.to_string()
+            .contains("cleartext signature block not found"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
 fn encrypt_requires_recipients() {
     let _home = set_temp_home();
     let backend = NativeBackend::new(PqcPolicy::Required);
@@ -536,6 +559,87 @@ fn compat_rejected_when_pqc_required() {
         compat: true,
     });
     assert!(result.is_err(), "expected compat to be rejected");
+}
+
+#[test]
+fn armored_sign_and_verify() {
+    let _home = set_temp_home();
+    let backend = NativeBackend::new(PqcPolicy::Required);
+    if !require_pqc(backend.supports_pqc()) {
+        return;
+    }
+
+    let meta = backend
+        .generate_key(KeyGenParams {
+            user_id: UserId("Armor Sign <armor-sign@example.com>".to_string()),
+            algo: None,
+            pqc_policy: PqcPolicy::Required,
+            pqc_level: PqcLevel::Baseline,
+            passphrase: None,
+            allow_unprotected: true,
+        })
+        .expect("keygen");
+
+    let msg = b"armored sign message";
+    let sig = backend
+        .sign(SignRequest {
+            signer: meta.key_id.clone(),
+            message: msg.to_vec(),
+            armor: true,
+            cleartext: false,
+            pqc_policy: PqcPolicy::Required,
+        })
+        .expect("sign");
+
+    let result = backend
+        .verify(VerifyRequest {
+            message: msg.to_vec(),
+            signature: sig,
+            cleartext: false,
+            pqc_policy: PqcPolicy::Required,
+        })
+        .expect("verify");
+    assert!(result.valid, "armored signature did not verify");
+    assert!(result.signer.is_some(), "expected signer fingerprint");
+}
+
+#[test]
+fn armored_encrypt_decrypt_roundtrip() {
+    let _home = set_temp_home();
+    let backend = NativeBackend::new(PqcPolicy::Required);
+    if !require_pqc(backend.supports_pqc()) {
+        return;
+    }
+
+    let meta = backend
+        .generate_key(KeyGenParams {
+            user_id: UserId("Armor Enc <armor-enc@example.com>".to_string()),
+            algo: None,
+            pqc_policy: PqcPolicy::Required,
+            pqc_level: PqcLevel::Baseline,
+            passphrase: None,
+            allow_unprotected: true,
+        })
+        .expect("keygen");
+
+    let msg = b"armored encrypt message";
+    let ciphertext = backend
+        .encrypt(EncryptRequest {
+            recipients: vec![meta.key_id],
+            plaintext: msg.to_vec(),
+            armor: true,
+            pqc_policy: PqcPolicy::Required,
+            compat: false,
+        })
+        .expect("encrypt");
+
+    let plaintext = backend
+        .decrypt(DecryptRequest {
+            ciphertext,
+            pqc_policy: PqcPolicy::Required,
+        })
+        .expect("decrypt");
+    assert_eq!(plaintext, msg);
 }
 
 #[test]
@@ -832,5 +936,39 @@ fn verify_rejects_modified_message() {
         cleartext: false,
         pqc_policy: PqcPolicy::Required,
     });
-    assert!(!result.expect("verify").valid, "expected invalid signature");
+    let result = result.expect("verify");
+    assert!(!result.valid, "expected invalid signature");
+    assert!(
+        result.signer.is_none(),
+        "invalid signature should not report signer"
+    );
+}
+
+#[test]
+fn export_armor_contains_header() {
+    let _home = set_temp_home();
+    let backend = NativeBackend::new(PqcPolicy::Required);
+    if !require_pqc(backend.supports_pqc()) {
+        return;
+    }
+
+    let meta = backend
+        .generate_key(KeyGenParams {
+            user_id: UserId("Armor Export <armor-export@example.com>".to_string()),
+            algo: None,
+            pqc_policy: PqcPolicy::Required,
+            pqc_level: PqcLevel::Baseline,
+            passphrase: None,
+            allow_unprotected: true,
+        })
+        .expect("keygen");
+
+    let public = backend
+        .export_key(&meta.key_id, false, true)
+        .expect("export armor");
+    let text = String::from_utf8_lossy(&public);
+    assert!(
+        text.contains("BEGIN PGP PUBLIC KEY BLOCK"),
+        "expected armored public key block"
+    );
 }

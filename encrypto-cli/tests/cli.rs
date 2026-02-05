@@ -335,6 +335,61 @@ fn sign_and_verify_roundtrip() {
 }
 
 #[test]
+fn clearsign_and_verify_roundtrip() {
+    if !pqc_available() || !pqc_high_available() {
+        return;
+    }
+    let home = temp_home();
+    let (code, _stdout, stderr) = run_cli(
+        &[
+            "keygen",
+            "CLI Clearsign <cli-clearsign@example.com>",
+            "--no-passphrase",
+        ],
+        &home,
+        None,
+    );
+    assert_eq!(code, 0, "keygen failed: {stderr}");
+
+    let (code, stdout, stderr) = run_cli(&["list-keys", "--secret"], &home, None);
+    assert_eq!(code, 0, "list-keys failed: {stderr}");
+    let fpr = parse_first_fingerprint(&stdout).expect("fingerprint");
+
+    let msg_path = home.join("clear.txt");
+    let sig_path = home.join("clear.asc");
+    std::fs::write(&msg_path, b"clear text content").expect("write msg");
+
+    let (code, _stdout, stderr) = run_cli(
+        &[
+            "sign",
+            "-u",
+            &fpr,
+            "--clearsign",
+            "--in",
+            msg_path.to_str().unwrap(),
+            "--out",
+            sig_path.to_str().unwrap(),
+        ],
+        &home,
+        None,
+    );
+    assert_eq!(code, 0, "clearsign failed: {stderr}");
+
+    let (code, _stdout, stderr) = run_cli(
+        &[
+            "verify",
+            "--signer",
+            &fpr,
+            "--clearsigned",
+            sig_path.to_str().unwrap(),
+        ],
+        &home,
+        None,
+    );
+    assert_eq!(code, 0, "verify clearsigned failed: {stderr}");
+}
+
+#[test]
 fn sign_rejects_conflicting_input_args() {
     if !pqc_available() || !pqc_high_available() {
         return;
@@ -606,5 +661,47 @@ fn export_secret_requires_secret_key() {
     assert!(
         stderr.contains("secret key not available"),
         "unexpected stderr: {stderr}"
+    );
+}
+
+#[test]
+fn export_armor_contains_header() {
+    if !pqc_available() || !pqc_high_available() {
+        return;
+    }
+    let home = temp_home();
+    let output_path = temp_file_path("armor-export");
+    let (code, _stdout, stderr) = run_cli(
+        &[
+            "keygen",
+            "CLI Armor <cli-armor@example.com>",
+            "--no-passphrase",
+        ],
+        &home,
+        None,
+    );
+    assert_eq!(code, 0, "keygen failed: {stderr}");
+
+    let (code, stdout, stderr) = run_cli(&["list-keys", "--secret"], &home, None);
+    assert_eq!(code, 0, "list-keys failed: {stderr}");
+    let fpr = parse_first_fingerprint(&stdout).expect("fingerprint");
+
+    let (code, _stdout, stderr) = run_cli(
+        &[
+            "export",
+            &fpr,
+            "--armor",
+            "--out",
+            output_path.to_str().unwrap(),
+        ],
+        &home,
+        None,
+    );
+    assert_eq!(code, 0, "export failed: {stderr}");
+
+    let armored = std::fs::read_to_string(&output_path).expect("read armored");
+    assert!(
+        armored.contains("BEGIN PGP PUBLIC KEY BLOCK"),
+        "expected public key armor"
     );
 }
