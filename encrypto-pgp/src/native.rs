@@ -274,8 +274,11 @@ impl NativeBackend {
             if pqc_available_for_suite(suite) {
                 return Ok(suite);
             }
-            if matches!(params.pqc_level, PqcLevel::High) && pqc_available() {
-                return Ok(CipherSuite::MLDSA65_Ed25519);
+            if matches!(params.pqc_level, PqcLevel::High) {
+                return Err(EncryptoError::InvalidInput(
+                    "PQC high suite not available; install OpenSSL 3.5+ with PQC support"
+                        .to_string(),
+                ));
             }
             if matches!(params.pqc_policy, PqcPolicy::Required)
                 || matches!(self.pqc_policy, PqcPolicy::Required)
@@ -363,15 +366,24 @@ impl Default for NativeBackend {
 
 pub fn pqc_algorithms_supported() -> Vec<(&'static str, bool)> {
     use PublicKeyAlgorithm::*;
+    let baseline = pqc_available_for_suite(CipherSuite::MLDSA65_Ed25519);
+    let high = pqc_available_for_suite(CipherSuite::MLDSA87_Ed448);
     vec![
-        ("MLDSA65_Ed25519", MLDSA65_Ed25519.is_supported()),
-        ("MLDSA87_Ed448", MLDSA87_Ed448.is_supported()),
+        ("MLDSA65_Ed25519", baseline),
+        ("MLDSA87_Ed448", high),
         ("SLHDSA128s", SLHDSA128s.is_supported()),
         ("SLHDSA128f", SLHDSA128f.is_supported()),
         ("SLHDSA256s", SLHDSA256s.is_supported()),
-        ("MLKEM768_X25519", MLKEM768_X25519.is_supported()),
-        ("MLKEM1024_X448", MLKEM1024_X448.is_supported()),
+        ("MLKEM768_X25519", baseline),
+        ("MLKEM1024_X448", high),
     ]
+}
+
+pub fn pqc_suite_supported(level: PqcLevel) -> bool {
+    match level {
+        PqcLevel::Baseline => pqc_available_for_suite(CipherSuite::MLDSA65_Ed25519),
+        PqcLevel::High => pqc_available_for_suite(CipherSuite::MLDSA87_Ed448),
+    }
 }
 
 impl Backend for NativeBackend {

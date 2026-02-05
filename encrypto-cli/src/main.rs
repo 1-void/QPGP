@@ -5,7 +5,7 @@ use encrypto_core::{
     PqcPolicy, RevocationReason, RevokeRequest, RotateRequest, SignRequest, UserId, VerifyRequest,
     VerifyResult,
 };
-use encrypto_pgp::{NativeBackend, pqc_algorithms_supported};
+use encrypto_pgp::{NativeBackend, pqc_algorithms_supported, pqc_suite_supported};
 use std::fs;
 use std::io::{self, Read, Write};
 
@@ -223,6 +223,13 @@ fn main() -> Result<()> {
             if backend.name() == "native" {
                 for (name, supported) in pqc_algorithms_supported() {
                     println!("pqc algo {name}: {supported}");
+                }
+                let baseline = pqc_suite_supported(PqcLevel::Baseline);
+                let high = pqc_suite_supported(PqcLevel::High);
+                if !baseline || !high {
+                    return Err(anyhow!(
+                        "PQC suites missing: baseline={baseline}, high={high}. Run scripts/bootstrap-pqc.sh"
+                    ));
                 }
             }
             print_env("ENCRYPTO_HOME");

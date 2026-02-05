@@ -53,6 +53,8 @@ source scripts/pqc-env.sh
 cargo run -p encrypto-cli -- info
 ```
 
+`keygen` defaults to the high PQC suite. If your OpenSSL build lacks ML-DSA‑87/ML‑KEM‑1024, `keygen` will fail. Use `encrypto doctor` to confirm both baseline and high suites are available.
+
 Optional source verification (recommended for reproducibility):
 ```bash
 export PQC_VERIFY=1

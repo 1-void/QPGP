@@ -1,14 +1,16 @@
-use encrypto_core::{Backend, PqcPolicy};
-use encrypto_pgp::NativeBackend;
+use encrypto_core::{Backend, PqcLevel, PqcPolicy};
+use encrypto_pgp::{NativeBackend, pqc_suite_supported};
 use std::io::Write;
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn pqc_available() -> bool {
     NativeBackend::new(PqcPolicy::Required).supports_pqc()
+}
+
+fn pqc_high_available() -> bool {
+    pqc_suite_supported(PqcLevel::High)
 }
 
 fn temp_home() -> PathBuf {
@@ -137,7 +139,7 @@ fn list_keys_rejects_relative_home() {
 
 #[test]
 fn keygen_defaults_to_high() {
-    if !pqc_available() {
+    if !pqc_available() || !pqc_high_available() {
         return;
     }
     let home = temp_home();
@@ -200,7 +202,7 @@ fn encrypt_rejects_conflicting_input_args() {
 
 #[test]
 fn sign_and_verify_roundtrip() {
-    if !pqc_available() {
+    if !pqc_available() || !pqc_high_available() {
         return;
     }
     let home = temp_home();
@@ -254,7 +256,7 @@ fn sign_and_verify_roundtrip() {
 
 #[test]
 fn sign_rejects_conflicting_input_args() {
-    if !pqc_available() {
+    if !pqc_available() || !pqc_high_available() {
         return;
     }
     let home = temp_home();
@@ -379,7 +381,7 @@ fn verify_rejects_conflicting_input_args() {
 
 #[test]
 fn keygen_requires_passphrase_without_flag() {
-    if !pqc_available() {
+    if !pqc_available() || !pqc_high_available() {
         return;
     }
     let home = temp_home();
@@ -397,7 +399,7 @@ fn keygen_requires_passphrase_without_flag() {
 
 #[test]
 fn rotate_requires_passphrase_without_flag() {
-    if !pqc_available() {
+    if !pqc_available() || !pqc_high_available() {
         return;
     }
     let home = temp_home();
@@ -446,23 +448,17 @@ fn export_errors_on_missing_key() {
     }
     let home = temp_home();
     let (code, _stdout, stderr) = run_cli(
-        &[
-            "export",
-            "DEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF",
-        ],
+        &["export", "DEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF"],
         &home,
         None,
     );
     assert_ne!(code, 0, "expected non-zero exit");
-    assert!(
-        !stderr.trim().is_empty(),
-        "expected stderr for missing key"
-    );
+    assert!(!stderr.trim().is_empty(), "expected stderr for missing key");
 }
 
 #[test]
 fn export_errors_on_unwritable_output() {
-    if !pqc_available() {
+    if !pqc_available() || !pqc_high_available() {
         return;
     }
     let home = temp_home();
