@@ -1189,3 +1189,83 @@ fn cleartext_signature_block(bytes: &[u8]) -> Result<Vec<u8>, EncryptoError> {
     }
     Ok(text[start..end].as_bytes().to_vec())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_path(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        std::env::temp_dir().join(format!("encrypto-native-{name}-{nanos}"))
+    }
+
+    #[test]
+    fn normalize_id_strips_prefix_and_whitespace() {
+        let normalized = normalize_id("  0xAb Cd\tEf ");
+        assert_eq!(normalized, "ABCDEF");
+    }
+
+    #[test]
+    fn is_full_fingerprint_checks_len_and_hex() {
+        assert!(is_full_fingerprint(
+            "DEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF"
+        ));
+        assert!(!is_full_fingerprint("deadbeef"));
+        assert!(!is_full_fingerprint(
+            "ZZZZBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF"
+        ));
+    }
+
+    #[test]
+    fn map_revocation_reason_matches_expected() {
+        assert_eq!(
+            map_revocation_reason(RevocationReason::KeyCompromised),
+            ReasonForRevocation::KeyCompromised
+        );
+        assert_eq!(
+            map_revocation_reason(RevocationReason::UserIdInvalid),
+            ReasonForRevocation::UIDRetired
+        );
+    }
+
+    #[test]
+    fn cleartext_signature_block_extracts_block() {
+        let input = b"hello\n-----BEGIN PGP SIGNATURE-----\nabc\n-----END PGP SIGNATURE-----\n";
+        let block = cleartext_signature_block(input).expect("extract");
+        let text = String::from_utf8_lossy(&block);
+        assert!(text.contains("BEGIN PGP SIGNATURE"));
+        assert!(text.contains("END PGP SIGNATURE"));
+    }
+
+    #[test]
+    fn cleartext_signature_block_rejects_missing_block() {
+        let err = cleartext_signature_block(b"no signature").expect_err("expected error");
+        assert!(
+            err.to_string()
+                .contains("cleartext signature block not found")
+        );
+    }
+
+    #[test]
+    fn write_atomic_writes_and_sets_mode() {
+        let path = temp_path("atomic");
+        write_atomic(&path, b"payload", 0o600).expect("write");
+        let bytes = std::fs::read(&path).expect("read");
+        assert_eq!(bytes, b"payload");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path)
+                .expect("metadata")
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+}

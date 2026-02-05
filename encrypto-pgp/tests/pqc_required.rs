@@ -4,7 +4,7 @@ use encrypto_core::{
 };
 mod common;
 
-use common::{require_pqc, set_temp_home};
+use common::{require_pqc, set_home, set_temp_home};
 use encrypto_pgp::NativeBackend;
 use sequoia_openpgp::serialize::SerializeInto;
 
@@ -131,6 +131,45 @@ fn pqc_required_outputs_are_pqc() {
 }
 
 #[test]
+fn list_keys_empty_returns_empty() {
+    let _home = set_temp_home();
+    let backend = NativeBackend::new(PqcPolicy::Required);
+    let keys = backend.list_keys().expect("list keys");
+    assert!(keys.is_empty(), "expected empty key list");
+}
+
+#[test]
+fn relative_home_rejected_without_override() {
+    let _home = set_home(std::path::Path::new("relative-home"));
+    let backend = NativeBackend::new(PqcPolicy::Required);
+    let err = backend
+        .list_keys()
+        .expect_err("expected relative home error");
+    assert!(
+        err.to_string()
+            .contains("ENCRYPTO_HOME must be an absolute path"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn export_missing_key_fails() {
+    let _home = set_temp_home();
+    let backend = NativeBackend::new(PqcPolicy::Required);
+    let err = backend
+        .export_key(
+            &KeyId("DEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF".to_string()),
+            false,
+            false,
+        )
+        .expect_err("expected missing key error");
+    assert!(
+        err.to_string().contains("key not found"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
 fn pqc_roundtrip_import_export() {
     let _home = set_temp_home();
     let backend = NativeBackend::new(PqcPolicy::Required);
@@ -252,6 +291,23 @@ fn cleartext_sign_verify_roundtrip() {
         verified_text.contains("cleartext message"),
         "cleartext message content missing"
     );
+}
+
+#[test]
+fn encrypt_requires_recipients() {
+    let _home = set_temp_home();
+    let backend = NativeBackend::new(PqcPolicy::Required);
+    if !require_pqc(backend.supports_pqc()) {
+        return;
+    }
+    let result = backend.encrypt(EncryptRequest {
+        recipients: Vec::new(),
+        plaintext: b"no recipients".to_vec(),
+        armor: false,
+        pqc_policy: PqcPolicy::Required,
+        compat: false,
+    });
+    assert!(result.is_err(), "expected recipient error");
 }
 
 #[test]
@@ -406,6 +462,48 @@ fn native_passphrase_encrypts_secret_keys() {
         pqc_policy: PqcPolicy::Required,
     });
     assert!(sign_without.is_err(), "expected passphrase error");
+}
+
+#[test]
+fn decrypt_requires_passphrase_for_encrypted_secret() {
+    let _home = set_temp_home();
+    let passphrase = "passphrase";
+    let backend = NativeBackend::with_passphrase(PqcPolicy::Required, Some(passphrase.to_string()));
+    if !require_pqc(backend.supports_pqc()) {
+        return;
+    }
+    let meta = backend
+        .generate_key(KeyGenParams {
+            user_id: UserId("Decrypt Pass <decrypt-pass@example.com>".to_string()),
+            algo: None,
+            pqc_policy: PqcPolicy::Required,
+            pqc_level: PqcLevel::Baseline,
+            passphrase: Some(passphrase.to_string()),
+            allow_unprotected: false,
+        })
+        .expect("keygen");
+
+    let ciphertext = backend
+        .encrypt(EncryptRequest {
+            recipients: vec![meta.key_id],
+            plaintext: b"secret message".to_vec(),
+            armor: false,
+            pqc_policy: PqcPolicy::Required,
+            compat: false,
+        })
+        .expect("encrypt");
+
+    let backend_no_pass = NativeBackend::new(PqcPolicy::Required);
+    let err = backend_no_pass
+        .decrypt(DecryptRequest {
+            ciphertext,
+            pqc_policy: PqcPolicy::Required,
+        })
+        .expect_err("expected passphrase error");
+    assert!(
+        err.to_string().contains("passphrase required"),
+        "unexpected error: {err}"
+    );
 }
 
 #[test]

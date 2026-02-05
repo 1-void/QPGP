@@ -10,6 +10,24 @@ pub struct TempHome {
     prev: Option<OsString>,
 }
 
+#[allow(dead_code)]
+pub struct EnvHome {
+    _lock: MutexGuard<'static, ()>,
+    prev: Option<OsString>,
+}
+
+impl Drop for EnvHome {
+    fn drop(&mut self) {
+        // Safety: tests serialize env changes via ENV_LOCK.
+        unsafe {
+            match &self.prev {
+                Some(value) => std::env::set_var("ENCRYPTO_HOME", value),
+                None => std::env::remove_var("ENCRYPTO_HOME"),
+            }
+        }
+    }
+}
+
 impl Drop for TempHome {
     fn drop(&mut self) {
         // Safety: tests serialize env changes via ENV_LOCK.
@@ -20,6 +38,17 @@ impl Drop for TempHome {
             }
         }
     }
+}
+
+#[allow(dead_code)]
+pub fn set_home(path: &std::path::Path) -> EnvHome {
+    let lock = ENV_LOCK.lock().expect("env lock poisoned");
+    let prev = std::env::var_os("ENCRYPTO_HOME");
+    // Safety: tests serialize env changes via ENV_LOCK.
+    unsafe {
+        std::env::set_var("ENCRYPTO_HOME", path);
+    }
+    EnvHome { _lock: lock, prev }
 }
 
 pub fn set_temp_home() -> TempHome {

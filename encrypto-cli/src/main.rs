@@ -713,11 +713,43 @@ mod tests {
     }
 
     #[test]
+    fn read_input_reads_file() {
+        let path = temp_path("input");
+        std::fs::write(&path, b"hello").expect("write input");
+        let bytes = read_input(Some(path.clone())).expect("read input");
+        assert_eq!(bytes, b"hello");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn read_input_rejects_large_file() {
+        let path = temp_path("input-large");
+        std::fs::write(&path, b"hello").expect("write input");
+        with_env_var("ENCRYPTO_MAX_INPUT_BYTES", Some("2"), || {
+            let err = read_input(Some(path.clone())).expect_err("expected size error");
+            assert!(err.to_string().contains("input exceeds size limit"));
+        });
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn read_passphrase_file_trims_newlines() {
         let path = temp_path("passphrase");
         std::fs::write(&path, b"secret\n").expect("write passphrase");
         let passphrase = read_passphrase_file(&path).expect("read");
         assert_eq!(passphrase, "secret");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn read_passphrase_file_rejects_invalid_utf8() {
+        let path = temp_path("passphrase-invalid");
+        std::fs::write(&path, [0xff, 0xfe]).expect("write passphrase");
+        let err = read_passphrase_file(&path).expect_err("expected utf8 error");
+        assert!(
+            err.to_string()
+                .contains("passphrase file must be valid UTF-8")
+        );
         let _ = std::fs::remove_file(&path);
     }
 
@@ -764,5 +796,12 @@ mod tests {
             enforce_expected_signer(Some("DEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF"), &result)
                 .expect_err("expected missing signer");
         assert!(err.to_string().contains("signer"));
+    }
+
+    #[test]
+    fn format_policy_outputs_expected_labels() {
+        assert_eq!(format_policy(&PqcPolicy::Disabled), "disabled");
+        assert_eq!(format_policy(&PqcPolicy::Preferred), "preferred");
+        assert_eq!(format_policy(&PqcPolicy::Required), "required");
     }
 }

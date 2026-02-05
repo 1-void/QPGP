@@ -1,6 +1,8 @@
 use encrypto_core::{Backend, PqcPolicy};
 use encrypto_pgp::NativeBackend;
 use std::io::Write;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -18,6 +20,16 @@ fn temp_home() -> PathBuf {
     dir.push(format!("encrypto-cli-test-{nanos}"));
     std::fs::create_dir_all(&dir).expect("create temp dir");
     dir
+}
+
+fn temp_file_path(name: &str) -> PathBuf {
+    let mut path = std::env::temp_dir();
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    path.push(format!("encrypto-cli-test-file-{name}-{nanos}"));
+    path
 }
 
 fn run_cli(args: &[&str], home: &PathBuf, stdin: Option<&[u8]>) -> (i32, String, String) {
@@ -145,6 +157,48 @@ fn keygen_defaults_to_high() {
 }
 
 #[test]
+fn encrypt_requires_recipient() {
+    if !pqc_available() {
+        return;
+    }
+    let home = temp_home();
+    let (code, _stdout, stderr) = run_cli(&["encrypt"], &home, Some(b"hi"));
+    assert_ne!(code, 0, "expected non-zero exit");
+    assert!(
+        stderr.contains("at least one -r/--recipient"),
+        "unexpected stderr: {stderr}"
+    );
+}
+
+#[test]
+fn encrypt_rejects_conflicting_input_args() {
+    if !pqc_available() {
+        return;
+    }
+    let home = temp_home();
+    let input_path = temp_file_path("input-conflict");
+    std::fs::write(&input_path, b"hello").expect("write input");
+    let (code, _stdout, stderr) = run_cli(
+        &[
+            "encrypt",
+            "-r",
+            "DEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF",
+            "--input",
+            input_path.to_str().unwrap(),
+            input_path.to_str().unwrap(),
+        ],
+        &home,
+        Some(b"stdin"),
+    );
+    assert_ne!(code, 0, "expected non-zero exit");
+    assert!(
+        stderr.contains("use either --input or FILE"),
+        "unexpected stderr: {stderr}"
+    );
+    let _ = std::fs::remove_file(&input_path);
+}
+
+#[test]
 fn sign_and_verify_roundtrip() {
     if !pqc_available() {
         return;
@@ -196,4 +250,244 @@ fn sign_and_verify_roundtrip() {
         None,
     );
     assert_eq!(code, 0, "verify failed: {stderr}");
+}
+
+#[test]
+fn sign_rejects_conflicting_input_args() {
+    if !pqc_available() {
+        return;
+    }
+    let home = temp_home();
+    let (code, _stdout, stderr) = run_cli(
+        &[
+            "keygen",
+            "CLI Conflict <cli-conflict@example.com>",
+            "--no-passphrase",
+        ],
+        &home,
+        None,
+    );
+    assert_eq!(code, 0, "keygen failed: {stderr}");
+
+    let (code, stdout, stderr) = run_cli(&["list-keys", "--secret"], &home, None);
+    assert_eq!(code, 0, "list-keys failed: {stderr}");
+    let fpr = parse_first_fingerprint(&stdout).expect("fingerprint");
+
+    let msg_path = home.join("conflict.txt");
+    std::fs::write(&msg_path, b"hello cli").expect("write msg");
+
+    let (code, _stdout, stderr) = run_cli(
+        &[
+            "sign",
+            "-u",
+            &fpr,
+            "--input",
+            msg_path.to_str().unwrap(),
+            msg_path.to_str().unwrap(),
+        ],
+        &home,
+        None,
+    );
+    assert_ne!(code, 0, "expected non-zero exit");
+    assert!(
+        stderr.contains("use either --input or FILE"),
+        "unexpected stderr: {stderr}"
+    );
+}
+
+#[test]
+fn verify_requires_signature_file_when_not_clearsigned() {
+    if !pqc_available() {
+        return;
+    }
+    let home = temp_home();
+    let (code, _stdout, stderr) = run_cli(
+        &[
+            "verify",
+            "--signer",
+            "DEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF",
+            "--input",
+            "msg.txt",
+        ],
+        &home,
+        None,
+    );
+    assert_ne!(code, 0, "expected non-zero exit");
+    assert!(
+        stderr.contains("signature file is required"),
+        "unexpected stderr: {stderr}"
+    );
+}
+
+#[test]
+fn decrypt_rejects_conflicting_input_args() {
+    if !pqc_available() {
+        return;
+    }
+    let home = temp_home();
+    let input_path = temp_file_path("decrypt-conflict");
+    std::fs::write(&input_path, b"cipher").expect("write input");
+    let (code, _stdout, stderr) = run_cli(
+        &[
+            "decrypt",
+            "--input",
+            input_path.to_str().unwrap(),
+            input_path.to_str().unwrap(),
+        ],
+        &home,
+        None,
+    );
+    assert_ne!(code, 0, "expected non-zero exit");
+    assert!(
+        stderr.contains("use either --input or FILE"),
+        "unexpected stderr: {stderr}"
+    );
+    let _ = std::fs::remove_file(&input_path);
+}
+
+#[test]
+fn verify_rejects_conflicting_input_args() {
+    if !pqc_available() {
+        return;
+    }
+    let home = temp_home();
+    let sig_path = temp_file_path("sig-conflict");
+    let msg_path = temp_file_path("msg-conflict");
+    std::fs::write(&sig_path, b"sig").expect("write sig");
+    std::fs::write(&msg_path, b"msg").expect("write msg");
+    let (code, _stdout, stderr) = run_cli(
+        &[
+            "verify",
+            "--signer",
+            "DEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF",
+            "--input",
+            msg_path.to_str().unwrap(),
+            sig_path.to_str().unwrap(),
+            msg_path.to_str().unwrap(),
+        ],
+        &home,
+        None,
+    );
+    assert_ne!(code, 0, "expected non-zero exit");
+    assert!(
+        stderr.contains("use either --input or FILE"),
+        "unexpected stderr: {stderr}"
+    );
+    let _ = std::fs::remove_file(&sig_path);
+    let _ = std::fs::remove_file(&msg_path);
+}
+
+#[test]
+fn keygen_requires_passphrase_without_flag() {
+    if !pqc_available() {
+        return;
+    }
+    let home = temp_home();
+    let (code, _stdout, stderr) = run_cli(
+        &["keygen", "Need Passphrase <need-pass@example.com>"],
+        &home,
+        None,
+    );
+    assert_ne!(code, 0, "expected non-zero exit");
+    assert!(
+        stderr.contains("passphrase required for native keygen"),
+        "unexpected stderr: {stderr}"
+    );
+}
+
+#[test]
+fn rotate_requires_passphrase_without_flag() {
+    if !pqc_available() {
+        return;
+    }
+    let home = temp_home();
+    let (code, _stdout, stderr) = run_cli(
+        &[
+            "keygen",
+            "CLI Rotate <cli-rotate@example.com>",
+            "--no-passphrase",
+        ],
+        &home,
+        None,
+    );
+    assert_eq!(code, 0, "keygen failed: {stderr}");
+
+    let (code, stdout, stderr) = run_cli(&["list-keys", "--secret"], &home, None);
+    assert_eq!(code, 0, "list-keys failed: {stderr}");
+    let fpr = parse_first_fingerprint(&stdout).expect("fingerprint");
+
+    let (code, _stdout, stderr) = run_cli(&["rotate", &fpr], &home, None);
+    assert_ne!(code, 0, "expected non-zero exit");
+    assert!(
+        stderr.contains("passphrase required for native rotation"),
+        "unexpected stderr: {stderr}"
+    );
+}
+
+#[test]
+fn import_errors_on_missing_file() {
+    if !pqc_available() {
+        return;
+    }
+    let home = temp_home();
+    let missing = temp_file_path("missing-key");
+    let (code, _stdout, stderr) = run_cli(&["import", missing.to_str().unwrap()], &home, None);
+    assert_ne!(code, 0, "expected non-zero exit");
+    assert!(
+        stderr.contains("No such file") || stderr.contains("no such file"),
+        "unexpected stderr: {stderr}"
+    );
+}
+
+#[test]
+fn export_errors_on_missing_key() {
+    if !pqc_available() {
+        return;
+    }
+    let home = temp_home();
+    let (code, _stdout, stderr) = run_cli(
+        &[
+            "export",
+            "DEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF",
+        ],
+        &home,
+        None,
+    );
+    assert_ne!(code, 0, "expected non-zero exit");
+    assert!(
+        !stderr.trim().is_empty(),
+        "expected stderr for missing key"
+    );
+}
+
+#[test]
+fn export_errors_on_unwritable_output() {
+    if !pqc_available() {
+        return;
+    }
+    let home = temp_home();
+    let (code, _stdout, stderr) = run_cli(
+        &[
+            "keygen",
+            "CLI Export <cli-export@example.com>",
+            "--no-passphrase",
+        ],
+        &home,
+        None,
+    );
+    assert_eq!(code, 0, "keygen failed: {stderr}");
+
+    let (code, stdout, stderr) = run_cli(&["list-keys", "--secret"], &home, None);
+    assert_eq!(code, 0, "list-keys failed: {stderr}");
+    let fpr = parse_first_fingerprint(&stdout).expect("fingerprint");
+
+    let bad_dir = temp_file_path("export-dir");
+    std::fs::create_dir_all(&bad_dir).expect("create dir");
+    let bad_path = bad_dir.to_str().unwrap();
+    let (code, _stdout, stderr) = run_cli(&["export", &fpr, "--out", bad_path], &home, None);
+    assert_ne!(code, 0, "expected non-zero exit");
+    assert!(
+        !stderr.trim().is_empty(),
+        "expected stderr for unwritable output: {stderr}"
+    );
 }
