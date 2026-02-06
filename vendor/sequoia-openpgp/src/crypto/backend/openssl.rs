@@ -49,7 +49,7 @@ pub fn context() -> &'static ossl::OsslContext {
 
     OSSL_CONTEXT.get_or_init(|| {
         let mut context = ossl::OsslContext::new_lib_ctx();
-        let conf = env::var("ENCRYPTO_OPENSSL_CONF")
+        let conf = env::var("QPGP_OPENSSL_CONF")
             .ok()
             .or_else(|| env::var("OPENSSL_CONF").ok());
         if let Some(path) = conf {

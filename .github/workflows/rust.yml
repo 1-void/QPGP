@@ -27,7 +27,7 @@ jobs:
         cargo fmt --check
         cargo clippy --workspace --all-targets -- -D warnings
         cargo build --verbose
-        cargo run -p encrypto-cli -- doctor
+        cargo run -p qpgp-cli -- doctor
         cargo test --verbose
 
   release:
@@ -44,9 +44,9 @@ jobs:
       id: version
       run: |
         set -euo pipefail
-        version=$(awk -F' *= *' '$1=="version"{gsub(/"/,"",$2); print $2; exit}' encrypto-cli/Cargo.toml)
+        version=$(awk -F' *= *' '$1=="version"{gsub(/"/,"",$2); print $2; exit}' qpgp-cli/Cargo.toml)
         if [[ -z "$version" || "$version" == "null" ]]; then
-          echo "failed to resolve version from encrypto-cli" >&2
+          echo "failed to resolve version from qpgp-cli" >&2
           exit 1
         fi
         echo "version=$version" >> "$GITHUB_OUTPUT"
@@ -55,8 +55,8 @@ jobs:
       run: |
         set -euo pipefail
         range="${{ github.event.before }}..${{ github.sha }}"
-        if git diff --name-only "$range" -- encrypto-cli/Cargo.toml | grep -q .; then
-          if git diff -U0 "$range" -- encrypto-cli/Cargo.toml | \
+        if git diff --name-only "$range" -- qpgp-cli/Cargo.toml | grep -q .; then
+          if git diff -U0 "$range" -- qpgp-cli/Cargo.toml | \
              grep -E '^[+-]version = "' >/dev/null; then
             echo "release=true" >> "$GITHUB_OUTPUT"
             exit 0

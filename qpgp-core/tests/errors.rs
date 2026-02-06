@@ -1,16 +1,16 @@
-use encrypto_core::EncryptoError;
+use qpgp_core::QpgpError;
 
 #[test]
 fn error_display_messages() {
-    let err = EncryptoError::not_implemented("feature");
+    let err = QpgpError::not_implemented("feature");
     assert_eq!(err.to_string(), "not implemented: feature");
 
-    let err = EncryptoError::InvalidInput("bad input".into());
+    let err = QpgpError::InvalidInput("bad input".into());
     assert_eq!(err.to_string(), "invalid input: bad input");
 
-    let err = EncryptoError::Backend("oops".into());
+    let err = QpgpError::Backend("oops".into());
     assert_eq!(err.to_string(), "backend error: oops");
 
-    let err = EncryptoError::Io("disk".into());
+    let err = QpgpError::Io("disk".into());
     assert_eq!(err.to_string(), "io error: disk");
 }

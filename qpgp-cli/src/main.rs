@@ -1,19 +1,19 @@
 use anyhow::{Result, anyhow};
 use clap::{Parser, Subcommand, ValueEnum};
-use encrypto_core::{
+use qpgp_core::{
     Backend, DecryptRequest, EncryptRequest, KeyGenParams, KeyId, OPENPGP_PQC_DRAFT, PqcLevel,
     PqcPolicy, RevocationReason, RevokeRequest, RotateRequest, SignRequest, UserId, VerifyRequest,
     VerifyResult,
 };
-use encrypto_pgp::{NativeBackend, pqc_algorithms_supported, pqc_suite_supported};
+use qpgp_pgp::{NativeBackend, pqc_algorithms_supported, pqc_suite_supported};
 use std::fs;
 use std::io::{self, Read, Write};
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "encrypto",
+    name = "qpgp",
     version,
-    about = "PQC-only OpenPGP-compatible crypto CLI"
+    about = "PQC-only OpenPGP-compatible crypto CLI (QPGP)"
 )]
 struct Cli {
     #[arg(long = "passphrase", global = true)]
@@ -232,8 +232,8 @@ fn main() -> Result<()> {
                     ));
                 }
             }
-            print_env("ENCRYPTO_HOME");
-            print_env("ENCRYPTO_OPENSSL_CONF");
+            print_env("QPGP_HOME");
+            print_env("QPGP_OPENSSL_CONF");
             print_env("OPENSSL_CONF");
             print_env("OPENSSL_MODULES");
             print_env("LD_LIBRARY_PATH");
@@ -480,7 +480,7 @@ fn read_input(path: Option<String>) -> Result<Vec<u8>> {
             let metadata = fs::metadata(&path)?;
             if metadata.len() > limit as u64 {
                 return Err(anyhow!(
-                    "input exceeds size limit ({limit} bytes); set ENCRYPTO_MAX_INPUT_BYTES to override"
+                    "input exceeds size limit ({limit} bytes); set QPGP_MAX_INPUT_BYTES to override"
                 ));
             }
             Ok(fs::read(path)?)
@@ -546,10 +546,10 @@ fn format_policy(policy: &PqcPolicy) -> &'static str {
 
 fn max_input_bytes() -> Result<usize> {
     const DEFAULT_LIMIT: usize = 64 * 1024 * 1024;
-    match std::env::var("ENCRYPTO_MAX_INPUT_BYTES") {
+    match std::env::var("QPGP_MAX_INPUT_BYTES") {
         Ok(value) => value
             .parse::<usize>()
-            .map_err(|err| anyhow!("invalid ENCRYPTO_MAX_INPUT_BYTES value {value:?}: {err}")),
+            .map_err(|err| anyhow!("invalid QPGP_MAX_INPUT_BYTES value {value:?}: {err}")),
         Err(_) => Ok(DEFAULT_LIMIT),
     }
 }
@@ -564,7 +564,7 @@ fn read_to_end_limited<R: Read>(mut reader: R, limit: usize) -> Result<Vec<u8>> 
         }
         if buf.len() + read > limit {
             return Err(anyhow!(
-                "input exceeds size limit ({limit} bytes); set ENCRYPTO_MAX_INPUT_BYTES to override"
+                "input exceeds size limit ({limit} bytes); set QPGP_MAX_INPUT_BYTES to override"
             ));
         }
         buf.extend_from_slice(&chunk[..read]);
@@ -657,7 +657,7 @@ mod tests {
             .unwrap_or_default()
             .as_nanos();
         std::env::temp_dir()
-            .join(format!("encrypto-cli-test-{name}-{nanos}"))
+            .join(format!("qpgp-cli-test-{name}-{nanos}"))
             .to_string_lossy()
             .to_string()
     }
@@ -694,7 +694,7 @@ mod tests {
 
     #[test]
     fn max_input_bytes_env_override() {
-        with_env_var("ENCRYPTO_MAX_INPUT_BYTES", Some("1234"), || {
+        with_env_var("QPGP_MAX_INPUT_BYTES", Some("1234"), || {
             let limit = max_input_bytes().expect("limit");
             assert_eq!(limit, 1234);
         });
@@ -702,9 +702,9 @@ mod tests {
 
     #[test]
     fn max_input_bytes_invalid_env() {
-        with_env_var("ENCRYPTO_MAX_INPUT_BYTES", Some("not-a-number"), || {
+        with_env_var("QPGP_MAX_INPUT_BYTES", Some("not-a-number"), || {
             let err = max_input_bytes().expect_err("expected error");
-            assert!(err.to_string().contains("invalid ENCRYPTO_MAX_INPUT_BYTES"));
+            assert!(err.to_string().contains("invalid QPGP_MAX_INPUT_BYTES"));
         });
     }
 
@@ -731,7 +731,7 @@ mod tests {
     fn read_input_rejects_large_file() {
         let path = temp_path("input-large");
         std::fs::write(&path, b"hello").expect("write input");
-        with_env_var("ENCRYPTO_MAX_INPUT_BYTES", Some("2"), || {
+        with_env_var("QPGP_MAX_INPUT_BYTES", Some("2"), || {
             let err = read_input(Some(path.clone())).expect_err("expected size error");
             assert!(err.to_string().contains("input exceeds size limit"));
         });

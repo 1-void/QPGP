@@ -1,4 +1,4 @@
-# encrypto
+# QPGP
 
 Plan: build a simple, OpenPGP-compatible CLI with post-quantum keys and E2EE, then expand from there.
 
@@ -26,34 +26,34 @@ Quantum note: PQC makes “store-now, decrypt-later” attacks dramatically hard
 
 Build and run the CLI:
 ```bash
-cargo run -p encrypto-cli -- --help
+cargo run -p qpgp-cli -- --help
 ```
 
 Generate a high-assurance PQC key:
 ```bash
-cargo run -p encrypto-cli -- keygen "Alice <alice@example.com>" --pqc-level high
+cargo run -p qpgp-cli -- keygen "Alice <alice@example.com>" --pqc-level high
 ```
 
 Default `--pqc-level` is `high` for stronger parameters. Use `--pqc-level baseline` if you need smaller keys/signatures.
 
 Generate a PQC key with a passphrase (native backend):
 ```bash
-cargo run -p encrypto-cli -- --passphrase-file ./pass.txt keygen "Alice <alice@example.com>"
+cargo run -p qpgp-cli -- --passphrase-file ./pass.txt keygen "Alice <alice@example.com>"
 ```
 
 Keygen requires a passphrase by default (native). Use `--no-passphrase` to override:
 ```bash
-cargo run -p encrypto-cli -- --no-passphrase keygen "Alice <alice@example.com>"
+cargo run -p qpgp-cli -- --no-passphrase keygen "Alice <alice@example.com>"
 ```
 
 Post-quantum mode (builds OpenSSL locally, then runs with PQC enabled):
 ```bash
 ./scripts/bootstrap-pqc.sh
 source scripts/pqc-env.sh
-cargo run -p encrypto-cli -- info
+cargo run -p qpgp-cli -- info
 ```
 
-`keygen` defaults to the high PQC suite. If your OpenSSL build lacks ML-DSA‑87/ML‑KEM‑1024, `keygen` will fail. Use `encrypto doctor` to confirm both baseline and high suites are available.
+`keygen` defaults to the high PQC suite. If your OpenSSL build lacks ML-DSA‑87/ML‑KEM‑1024, `keygen` will fail. Use `qpgp doctor` to confirm both baseline and high suites are available.
 
 Optional source verification (recommended for reproducibility):
 ```bash
@@ -66,29 +66,29 @@ export OQSPROVIDER_COMMIT=<expected-commit-sha>
 
 Basics:
 ```bash
-cargo run -p encrypto-cli -- encrypt -r <KEY_ID> message.txt -o msg.pgp
-cargo run -p encrypto-cli -- decrypt -o message.txt msg.pgp
-cargo run -p encrypto-cli -- sign -u <KEY_ID> message.txt -o message.sig
-cargo run -p encrypto-cli -- verify --signer <FULL_FINGERPRINT> message.sig message.txt
-cargo run -p encrypto-cli -- sign -u <KEY_ID> --clearsign message.txt -o message.asc
-cargo run -p encrypto-cli -- verify --signer <FULL_FINGERPRINT> --clearsigned message.asc
-cargo run -p encrypto-cli -- export <KEY_ID> --armor -o key.asc
+cargo run -p qpgp-cli -- encrypt -r <KEY_ID> message.txt -o msg.pgp
+cargo run -p qpgp-cli -- decrypt -o message.txt msg.pgp
+cargo run -p qpgp-cli -- sign -u <KEY_ID> message.txt -o message.sig
+cargo run -p qpgp-cli -- verify --signer <FULL_FINGERPRINT> message.sig message.txt
+cargo run -p qpgp-cli -- sign -u <KEY_ID> --clearsign message.txt -o message.asc
+cargo run -p qpgp-cli -- verify --signer <FULL_FINGERPRINT> --clearsigned message.asc
+cargo run -p qpgp-cli -- export <KEY_ID> --armor -o key.asc
 ```
 
 Note: sensitive operations require a full fingerprint (40 or 64 hex characters). Verification requires `--signer` to pin the expected signer. Use `list-keys` to find the exact fingerprint.
 
 Passphrase note: prefer `--passphrase-file` to avoid exposing secrets in process listings.
-Large files: inputs are limited to 64 MiB by default. Override with `ENCRYPTO_MAX_INPUT_BYTES`.
+Large files: inputs are limited to 64 MiB by default. Override with `QPGP_MAX_INPUT_BYTES`.
 
 Key lifecycle:
 ```bash
-cargo run -p encrypto-cli -- revoke <KEY_ID> --reason key-superseded --armor -o revoked.asc
-cargo run -p encrypto-cli -- rotate <KEY_ID>
+cargo run -p qpgp-cli -- revoke <KEY_ID> --reason key-superseded --armor -o revoked.asc
+cargo run -p qpgp-cli -- rotate <KEY_ID>
 ```
 
 Diagnostics:
 ```bash
-cargo run -p encrypto-cli -- doctor
+cargo run -p qpgp-cli -- doctor
 ```
 
 If you need oqs-provider explicitly:
@@ -99,7 +99,7 @@ PQC_WITH_OQS=1 ./scripts/bootstrap-pqc.sh
 Draft vectors (optional):
 ```bash
 ./scripts/fetch-draft-vectors.sh
-cargo test -p encrypto-pgp --test draft_vectors
+cargo test -p qpgp-pgp --test draft_vectors
 ```
 
 ## Contributing
@@ -108,7 +108,7 @@ Keep it simple.
 
 If you change crypto behavior, include a quick end-to-end check:
 ```bash
-cargo run -p encrypto-cli -- info
+cargo run -p qpgp-cli -- info
 ```
 
 Prefer small commits with clear messages.

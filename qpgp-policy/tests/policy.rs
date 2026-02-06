@@ -1,4 +1,4 @@
-use encrypto_policy::{
+use qpgp_policy::{
     cert_has_pqc_encryption_key, cert_has_pqc_signing_key, cert_is_pqc_only,
     ensure_pqc_encryption_has_pqc, ensure_pqc_encryption_output, ensure_pqc_signature_output,
     hash_is_pqc_ok, is_pqc_kem_algo, is_pqc_sign_algo, pqc_kem_key_version_ok,

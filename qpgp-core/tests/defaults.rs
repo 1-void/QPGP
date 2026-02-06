@@ -1,4 +1,4 @@
-use encrypto_core::{PqcLevel, PqcPolicy};
+use qpgp_core::{PqcLevel, PqcPolicy};
 
 #[test]
 fn defaults_are_strict() {

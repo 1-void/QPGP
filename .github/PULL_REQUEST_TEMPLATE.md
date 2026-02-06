@@ -1,7 +1,7 @@
 ## Summary
 
 ## Testing
-- [ ] `cargo test -p encrypto-pgp --tests`
+- [ ] `cargo test -p qpgp-pgp --tests`
 
 ## Security considerations
 - [ ] This change does not weaken PQC-only guarantees

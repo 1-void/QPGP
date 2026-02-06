@@ -1,9 +1,9 @@
-use encrypto_policy::{ensure_pqc_encryption_output, ensure_pqc_signature_output};
+use qpgp_policy::{ensure_pqc_encryption_output, ensure_pqc_signature_output};
 use std::fs;
 use std::path::Path;
 
 fn load_vectors(prefix: &str) -> Vec<Vec<u8>> {
-    let dir = Path::new("encrypto-pgp/tests/vectors");
+    let dir = Path::new("qpgp-pgp/tests/vectors");
     let mut entries = Vec::new();
     if let Ok(read_dir) = fs::read_dir(dir) {
         for entry in read_dir.flatten() {

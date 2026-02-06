@@ -1,4 +1,4 @@
-# encrypto PQC Profile (Draft Alignment)
+# QPGP PQC Profile (Draft Alignment)
 
 Target spec: `draft-ietf-openpgp-pqc-17` (IETF OpenPGP PQC draft).
 

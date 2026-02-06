@@ -1,11 +1,11 @@
-use encrypto_core::{
+use qpgp_core::{
     Backend, KeyGenParams, PqcLevel, PqcPolicy, RevocationReason, RevokeRequest, RotateRequest,
     UserId,
 };
 mod common;
 
 use common::{require_pqc, set_temp_home};
-use encrypto_pgp::NativeBackend;
+use qpgp_pgp::NativeBackend;
 
 fn assert_revoked(cert_bytes: &[u8]) {
     use openpgp::parse::Parse;

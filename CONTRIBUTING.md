@@ -10,10 +10,10 @@ This project is intentionally conservative and security-focused.
 
 ## Quick Start
 - Build: `cargo build`
-- Tests (recommended): `cargo test -p encrypto-pgp --tests`
+- Tests (recommended): `cargo test -p qpgp-pgp --tests`
 - PQC runtime: `./scripts/bootstrap-pqc.sh` then `source scripts/pqc-env.sh`
-- CLI help: `cargo run -p encrypto-cli -- --help`
-- Verify PQC suites: `cargo run -p encrypto-cli -- doctor` (must report baseline + high as supported)
+- CLI help: `cargo run -p qpgp-cli -- --help`
+- Verify PQC suites: `cargo run -p qpgp-cli -- doctor` (must report baseline + high as supported)
 
 ## Coding Style
 - Run `cargo fmt` if you touch Rust files.

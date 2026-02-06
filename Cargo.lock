@@ -401,38 +401,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "encrypto-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "encrypto-core",
- "encrypto-pgp",
-]
-
-[[package]]
-name = "encrypto-core"
-version = "0.1.0"
-
-[[package]]
-name = "encrypto-pgp"
-version = "0.1.0"
-dependencies = [
- "dirs",
- "encrypto-core",
- "encrypto-policy",
- "sequoia-openpgp",
- "tempfile",
-]
-
-[[package]]
-name = "encrypto-policy"
-version = "0.1.0"
-dependencies = [
- "sequoia-openpgp",
-]
-
-[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -945,6 +913,38 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8fd00f0bb2e90d81d1044c2b32617f68fcb9fa3bb7640c23e9c748e53fb30934"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "qpgp-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "qpgp-core",
+ "qpgp-pgp",
+]
+
+[[package]]
+name = "qpgp-core"
+version = "0.1.0"
+
+[[package]]
+name = "qpgp-pgp"
+version = "0.1.0"
+dependencies = [
+ "dirs",
+ "qpgp-core",
+ "qpgp-policy",
+ "sequoia-openpgp",
+ "tempfile",
+]
+
+[[package]]
+name = "qpgp-policy"
+version = "0.1.0"
+dependencies = [
+ "sequoia-openpgp",
 ]
 
 [[package]]

@@ -1,5 +1,5 @@
-use encrypto_core::{Backend, PqcLevel, PqcPolicy};
-use encrypto_pgp::{NativeBackend, pqc_suite_supported};
+use qpgp_core::{Backend, PqcLevel, PqcPolicy};
+use qpgp_pgp::{NativeBackend, pqc_suite_supported};
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -23,7 +23,7 @@ fn temp_home() -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    dir.push(format!("encrypto-cli-test-{nanos}"));
+    dir.push(format!("qpgp-cli-test-{nanos}"));
     std::fs::create_dir_all(&dir).expect("create temp dir");
     dir
 }
@@ -34,15 +34,15 @@ fn temp_file_path(name: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    path.push(format!("encrypto-cli-test-file-{name}-{nanos}"));
+    path.push(format!("qpgp-cli-test-file-{name}-{nanos}"));
     path
 }
 
 fn run_cli(args: &[&str], home: &PathBuf, stdin: Option<&[u8]>) -> (i32, String, String) {
-    let bin = env!("CARGO_BIN_EXE_encrypto-cli");
+    let bin = env!("CARGO_BIN_EXE_qpgp-cli");
     let mut cmd = Command::new(bin);
     cmd.args(args)
-        .env("ENCRYPTO_HOME", home)
+        .env("QPGP_HOME", home)
         .env("RUST_BACKTRACE", "0")
         .stdin(if stdin.is_some() {
             Stdio::piped()
@@ -55,7 +55,7 @@ fn run_cli(args: &[&str], home: &PathBuf, stdin: Option<&[u8]>) -> (i32, String,
         cmd.env("LLVM_PROFILE_FILE", profile);
     }
 
-    let mut child = cmd.spawn().expect("spawn encrypto-cli");
+    let mut child = cmd.spawn().expect("spawn qpgp-cli");
     if let Some(input) = stdin {
         let mut handle = child.stdin.take().expect("stdin handle");
         handle.write_all(input).expect("write stdin");
@@ -128,15 +128,15 @@ fn list_keys_rejects_relative_home() {
     if !pqc_available() {
         return;
     }
-    let bin = env!("CARGO_BIN_EXE_encrypto-cli");
+    let bin = env!("CARGO_BIN_EXE_qpgp-cli");
     let output = Command::new(bin)
         .args(["list-keys"])
-        .env("ENCRYPTO_HOME", "relative-home")
+        .env("QPGP_HOME", "relative-home")
         .output()
         .expect("run list-keys");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("ENCRYPTO_HOME must be an absolute path"),
+        stderr.contains("QPGP_HOME must be an absolute path"),
         "unexpected stderr: {stderr}"
     );
 }

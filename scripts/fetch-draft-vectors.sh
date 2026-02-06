@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-out_dir="encrypto-pgp/tests/vectors"
+out_dir="qpgp-pgp/tests/vectors"
 draft_url="https://datatracker.ietf.org/doc/draft-ietf-openpgp-pqc/?format=txt"
 
 mkdir -p "$out_dir"

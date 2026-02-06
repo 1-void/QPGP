@@ -1,10 +1,10 @@
 [workspace]
 resolver = "2"
 members = [
-  "encrypto-core",
-  "encrypto-policy",
-  "encrypto-pgp",
-  "encrypto-cli"
+  "qpgp-core",
+  "qpgp-policy",
+  "qpgp-pgp",
+  "qpgp-cli"
 ]
 
 [patch.crates-io]

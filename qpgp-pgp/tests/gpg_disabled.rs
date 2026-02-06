@@ -1,5 +1,5 @@
-use encrypto_core::{Backend, EncryptRequest, KeyId, PqcPolicy};
-use encrypto_pgp::{GpgBackend, GpgConfig};
+use qpgp_core::{Backend, EncryptRequest, KeyId, PqcPolicy};
+use qpgp_pgp::{GpgBackend, GpgConfig};
 
 #[test]
 fn gpg_backend_is_disabled() {

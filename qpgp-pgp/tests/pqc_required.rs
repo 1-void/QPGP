@@ -1,11 +1,11 @@
-use encrypto_core::{
+use qpgp_core::{
     Backend, DecryptRequest, EncryptRequest, KeyGenParams, KeyId, PqcLevel, PqcPolicy, SignRequest,
     UserId, VerifyRequest,
 };
 mod common;
 
 use common::{require_pqc, set_home, set_temp_home};
-use encrypto_pgp::NativeBackend;
+use qpgp_pgp::NativeBackend;
 use sequoia_openpgp::serialize::SerializeInto;
 use std::ffi::OsString;
 
@@ -174,7 +174,7 @@ fn relative_home_rejected_without_override() {
         .expect_err("expected relative home error");
     assert!(
         err.to_string()
-            .contains("ENCRYPTO_HOME must be an absolute path"),
+            .contains("QPGP_HOME must be an absolute path"),
         "unexpected error: {err}"
     );
 }
@@ -182,7 +182,7 @@ fn relative_home_rejected_without_override() {
 #[test]
 fn relative_home_allowed_with_override() {
     let _home = set_home(std::path::Path::new("relative-home-allow"));
-    let _guard = set_env_var("ENCRYPTO_ALLOW_RELATIVE_HOME", "1");
+    let _guard = set_env_var("QPGP_ALLOW_RELATIVE_HOME", "1");
     let backend = NativeBackend::new(PqcPolicy::Required);
     let keys = backend.list_keys().expect("list keys");
     assert!(keys.is_empty(), "expected empty key list");

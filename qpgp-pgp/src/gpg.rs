@@ -1,5 +1,5 @@
-use encrypto_core::{
-    Backend, DecryptRequest, EncryptRequest, EncryptoError, KeyGenParams, KeyId, KeyMeta,
+use qpgp_core::{
+    Backend, DecryptRequest, EncryptRequest, QpgpError, KeyGenParams, KeyId, KeyMeta,
     PqcPolicy, RevokeRequest, RevokeResult, RotateRequest, RotateResult, SignRequest, UserId,
     VerifyRequest, VerifyResult,
 };
@@ -61,22 +61,22 @@ impl GpgBackend {
         &self.config
     }
 
-    fn ensure_pqc_only_backend(&self) -> Result<(), EncryptoError> {
-        Err(EncryptoError::Backend(
+    fn ensure_pqc_only_backend(&self) -> Result<(), QpgpError> {
+        Err(QpgpError::Backend(
             "PQC-only build: gpg backend is disabled".to_string(),
         ))
     }
 
-    fn ensure_pqc_policy(&self, policy: &PqcPolicy) -> Result<(), EncryptoError> {
+    fn ensure_pqc_policy(&self, policy: &PqcPolicy) -> Result<(), QpgpError> {
         if !matches!(policy, PqcPolicy::Required) {
-            return Err(EncryptoError::InvalidInput(
+            return Err(QpgpError::InvalidInput(
                 "PQC-only build requires --pqc required".to_string(),
             ));
         }
         self.ensure_pqc_only_backend()
     }
 
-    fn build_base_args(&self) -> Result<(Vec<String>, Option<NamedTempFile>), EncryptoError> {
+    fn build_base_args(&self) -> Result<(Vec<String>, Option<NamedTempFile>), QpgpError> {
         let mut args = Vec::new();
         let mut passphrase_file = None;
         let mut pinentry_mode = self.config.pinentry_mode;
@@ -93,9 +93,9 @@ impl GpgBackend {
             using_passphrase = true;
         } else if let Some(passphrase) = &self.config.passphrase {
             let mut file = NamedTempFile::new()
-                .map_err(|err| EncryptoError::Io(format!("temp file error: {err}")))?;
+                .map_err(|err| QpgpError::Io(format!("temp file error: {err}")))?;
             file.write_all(passphrase.as_bytes())
-                .map_err(|err| EncryptoError::Io(format!("temp write error: {err}")))?;
+                .map_err(|err| QpgpError::Io(format!("temp write error: {err}")))?;
             args.push("--passphrase-file".to_string());
             args.push(file.path().to_string_lossy().to_string());
             passphrase_file = Some(file);
@@ -118,7 +118,7 @@ impl GpgBackend {
         Ok((args, passphrase_file))
     }
 
-    fn run_gpg(&self, args: &[&str], input: Option<&[u8]>) -> Result<CommandOutput, EncryptoError> {
+    fn run_gpg(&self, args: &[&str], input: Option<&[u8]>) -> Result<CommandOutput, QpgpError> {
         let (base_args, _passphrase_file) = self.build_base_args()?;
         let mut cmd = Command::new(&self.config.gpg_path);
         cmd.args(base_args)
@@ -133,19 +133,19 @@ impl GpgBackend {
 
         let mut child = cmd
             .spawn()
-            .map_err(|err| EncryptoError::Backend(format!("failed to spawn gpg: {err}")))?;
+            .map_err(|err| QpgpError::Backend(format!("failed to spawn gpg: {err}")))?;
 
         if let Some(bytes) = input
             && let Some(mut stdin) = child.stdin.take()
         {
             stdin
                 .write_all(bytes)
-                .map_err(|err| EncryptoError::Io(format!("gpg stdin write failed: {err}")))?;
+                .map_err(|err| QpgpError::Io(format!("gpg stdin write failed: {err}")))?;
         }
 
         let output = child
             .wait_with_output()
-            .map_err(|err| EncryptoError::Backend(format!("gpg failed: {err}")))?;
+            .map_err(|err| QpgpError::Backend(format!("gpg failed: {err}")))?;
 
         Ok(CommandOutput {
             status: output.status,
@@ -154,11 +154,11 @@ impl GpgBackend {
         })
     }
 
-    fn output_or_error(&self, output: CommandOutput) -> Result<Vec<u8>, EncryptoError> {
+    fn output_or_error(&self, output: CommandOutput) -> Result<Vec<u8>, QpgpError> {
         if output.status.success() {
             Ok(output.stdout)
         } else {
-            Err(EncryptoError::Backend(format!(
+            Err(QpgpError::Backend(format!(
                 "gpg error: {}",
                 String::from_utf8_lossy(&output.stderr)
             )))
@@ -234,7 +234,7 @@ impl GpgBackend {
         key_id
     }
 
-    fn list_keys_inner(&self) -> Result<Vec<KeyMeta>, EncryptoError> {
+    fn list_keys_inner(&self) -> Result<Vec<KeyMeta>, QpgpError> {
         let output = self.run_gpg(
             &["--list-keys", "--with-colons", "--keyid-format", "LONG"],
             None,
@@ -278,12 +278,12 @@ impl Backend for GpgBackend {
         false
     }
 
-    fn list_keys(&self) -> Result<Vec<KeyMeta>, EncryptoError> {
+    fn list_keys(&self) -> Result<Vec<KeyMeta>, QpgpError> {
         self.ensure_pqc_only_backend()?;
         self.list_keys_inner()
     }
 
-    fn generate_key(&self, params: KeyGenParams) -> Result<KeyMeta, EncryptoError> {
+    fn generate_key(&self, params: KeyGenParams) -> Result<KeyMeta, QpgpError> {
         self.ensure_pqc_policy(&params.pqc_policy)?;
         let algo = params.algo.as_deref().unwrap_or("default");
         let output = self.run_gpg(
@@ -306,12 +306,12 @@ impl Backend for GpgBackend {
             return Ok(key);
         }
 
-        Err(EncryptoError::Backend(
+        Err(QpgpError::Backend(
             "key generated but not found in keyring".to_string(),
         ))
     }
 
-    fn import_key(&self, bytes: &[u8]) -> Result<KeyMeta, EncryptoError> {
+    fn import_key(&self, bytes: &[u8]) -> Result<KeyMeta, QpgpError> {
         self.ensure_pqc_only_backend()?;
         let output = self.run_gpg(&["--status-fd", "1", "--import"], Some(bytes))?;
         let status_output = self.output_or_error(output)?;
@@ -325,12 +325,12 @@ impl Backend for GpgBackend {
             });
         }
 
-        Err(EncryptoError::Backend(
+        Err(QpgpError::Backend(
             "import completed but key id was not found".to_string(),
         ))
     }
 
-    fn export_key(&self, id: &KeyId, secret: bool, armor: bool) -> Result<Vec<u8>, EncryptoError> {
+    fn export_key(&self, id: &KeyId, secret: bool, armor: bool) -> Result<Vec<u8>, QpgpError> {
         self.ensure_pqc_only_backend()?;
         let mut args = if secret {
             vec!["--export-secret-keys", &id.0]
@@ -344,7 +344,7 @@ impl Backend for GpgBackend {
         self.output_or_error(output)
     }
 
-    fn encrypt(&self, req: EncryptRequest) -> Result<Vec<u8>, EncryptoError> {
+    fn encrypt(&self, req: EncryptRequest) -> Result<Vec<u8>, QpgpError> {
         self.ensure_pqc_policy(&req.pqc_policy)?;
         let mut args = vec!["--encrypt"];
         if req.armor {
@@ -358,13 +358,13 @@ impl Backend for GpgBackend {
         self.output_or_error(output)
     }
 
-    fn decrypt(&self, req: DecryptRequest) -> Result<Vec<u8>, EncryptoError> {
+    fn decrypt(&self, req: DecryptRequest) -> Result<Vec<u8>, QpgpError> {
         self.ensure_pqc_policy(&req.pqc_policy)?;
         let output = self.run_gpg(&["--decrypt"], Some(&req.ciphertext))?;
         self.output_or_error(output)
     }
 
-    fn sign(&self, req: SignRequest) -> Result<Vec<u8>, EncryptoError> {
+    fn sign(&self, req: SignRequest) -> Result<Vec<u8>, QpgpError> {
         self.ensure_pqc_policy(&req.pqc_policy)?;
         let mut args = if req.cleartext {
             vec!["--clearsign", "--local-user", &req.signer.0]
@@ -378,24 +378,24 @@ impl Backend for GpgBackend {
         self.output_or_error(output)
     }
 
-    fn verify(&self, req: VerifyRequest) -> Result<VerifyResult, EncryptoError> {
+    fn verify(&self, req: VerifyRequest) -> Result<VerifyResult, QpgpError> {
         self.ensure_pqc_policy(&req.pqc_policy)?;
         if req.cleartext {
-            return Err(EncryptoError::Backend(
+            return Err(QpgpError::Backend(
                 "gpg backend is disabled".to_string(),
             ));
         }
         let mut message_file = NamedTempFile::new()
-            .map_err(|err| EncryptoError::Io(format!("temp file error: {err}")))?;
+            .map_err(|err| QpgpError::Io(format!("temp file error: {err}")))?;
         message_file
             .write_all(&req.message)
-            .map_err(|err| EncryptoError::Io(format!("temp write error: {err}")))?;
+            .map_err(|err| QpgpError::Io(format!("temp write error: {err}")))?;
 
         let mut sig_file = NamedTempFile::new()
-            .map_err(|err| EncryptoError::Io(format!("temp file error: {err}")))?;
+            .map_err(|err| QpgpError::Io(format!("temp file error: {err}")))?;
         sig_file
             .write_all(&req.signature)
-            .map_err(|err| EncryptoError::Io(format!("temp write error: {err}")))?;
+            .map_err(|err| QpgpError::Io(format!("temp write error: {err}")))?;
 
         let output = self.run_gpg(
             &[
@@ -415,14 +415,14 @@ impl Backend for GpgBackend {
         })
     }
 
-    fn revoke_key(&self, _req: RevokeRequest) -> Result<RevokeResult, EncryptoError> {
-        Err(EncryptoError::not_implemented(
+    fn revoke_key(&self, _req: RevokeRequest) -> Result<RevokeResult, QpgpError> {
+        Err(QpgpError::not_implemented(
             "revocation is not implemented for the gpg backend",
         ))
     }
 
-    fn rotate_key(&self, _req: RotateRequest) -> Result<RotateResult, EncryptoError> {
-        Err(EncryptoError::not_implemented(
+    fn rotate_key(&self, _req: RotateRequest) -> Result<RotateResult, QpgpError> {
+        Err(QpgpError::not_implemented(
             "rotation is not implemented for the gpg backend",
         ))
     }

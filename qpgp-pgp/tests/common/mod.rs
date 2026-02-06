@@ -21,8 +21,8 @@ impl Drop for EnvHome {
         // Safety: tests serialize env changes via ENV_LOCK.
         unsafe {
             match &self.prev {
-                Some(value) => std::env::set_var("ENCRYPTO_HOME", value),
-                None => std::env::remove_var("ENCRYPTO_HOME"),
+                Some(value) => std::env::set_var("QPGP_HOME", value),
+                None => std::env::remove_var("QPGP_HOME"),
             }
         }
     }
@@ -33,8 +33,8 @@ impl Drop for TempHome {
         // Safety: tests serialize env changes via ENV_LOCK.
         unsafe {
             match &self.prev {
-                Some(value) => std::env::set_var("ENCRYPTO_HOME", value),
-                None => std::env::remove_var("ENCRYPTO_HOME"),
+                Some(value) => std::env::set_var("QPGP_HOME", value),
+                None => std::env::remove_var("QPGP_HOME"),
             }
         }
     }
@@ -43,10 +43,10 @@ impl Drop for TempHome {
 #[allow(dead_code)]
 pub fn set_home(path: &std::path::Path) -> EnvHome {
     let lock = ENV_LOCK.lock().expect("env lock poisoned");
-    let prev = std::env::var_os("ENCRYPTO_HOME");
+    let prev = std::env::var_os("QPGP_HOME");
     // Safety: tests serialize env changes via ENV_LOCK.
     unsafe {
-        std::env::set_var("ENCRYPTO_HOME", path);
+        std::env::set_var("QPGP_HOME", path);
     }
     EnvHome { _lock: lock, prev }
 }
@@ -54,10 +54,10 @@ pub fn set_home(path: &std::path::Path) -> EnvHome {
 pub fn set_temp_home() -> TempHome {
     let lock = ENV_LOCK.lock().expect("env lock poisoned");
     let dir = tempfile::tempdir().expect("tempdir");
-    let prev = std::env::var_os("ENCRYPTO_HOME");
+    let prev = std::env::var_os("QPGP_HOME");
     // Safety: tests serialize env changes via ENV_LOCK.
     unsafe {
-        std::env::set_var("ENCRYPTO_HOME", dir.path());
+        std::env::set_var("QPGP_HOME", dir.path());
     }
     TempHome {
         _lock: lock,

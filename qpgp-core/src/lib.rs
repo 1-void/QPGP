@@ -121,47 +121,47 @@ pub struct RotateResult {
 }
 
 #[derive(Debug)]
-pub enum EncryptoError {
+pub enum QpgpError {
     NotImplemented(&'static str),
     InvalidInput(String),
     Backend(String),
     Io(String),
 }
 
-impl EncryptoError {
+impl QpgpError {
     pub fn not_implemented(msg: &'static str) -> Self {
-        EncryptoError::NotImplemented(msg)
+        QpgpError::NotImplemented(msg)
     }
 }
 
-impl fmt::Display for EncryptoError {
+impl fmt::Display for QpgpError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            EncryptoError::NotImplemented(msg) => write!(f, "not implemented: {msg}"),
-            EncryptoError::InvalidInput(msg) => write!(f, "invalid input: {msg}"),
-            EncryptoError::Backend(msg) => write!(f, "backend error: {msg}"),
-            EncryptoError::Io(msg) => write!(f, "io error: {msg}"),
+            QpgpError::NotImplemented(msg) => write!(f, "not implemented: {msg}"),
+            QpgpError::InvalidInput(msg) => write!(f, "invalid input: {msg}"),
+            QpgpError::Backend(msg) => write!(f, "backend error: {msg}"),
+            QpgpError::Io(msg) => write!(f, "io error: {msg}"),
         }
     }
 }
 
-impl std::error::Error for EncryptoError {}
+impl std::error::Error for QpgpError {}
 
 pub trait Backend {
     fn name(&self) -> &'static str;
     fn supports_pqc(&self) -> bool;
 
-    fn list_keys(&self) -> Result<Vec<KeyMeta>, EncryptoError>;
-    fn generate_key(&self, params: KeyGenParams) -> Result<KeyMeta, EncryptoError>;
-    fn import_key(&self, bytes: &[u8]) -> Result<KeyMeta, EncryptoError>;
-    fn export_key(&self, id: &KeyId, secret: bool, armor: bool) -> Result<Vec<u8>, EncryptoError>;
+    fn list_keys(&self) -> Result<Vec<KeyMeta>, QpgpError>;
+    fn generate_key(&self, params: KeyGenParams) -> Result<KeyMeta, QpgpError>;
+    fn import_key(&self, bytes: &[u8]) -> Result<KeyMeta, QpgpError>;
+    fn export_key(&self, id: &KeyId, secret: bool, armor: bool) -> Result<Vec<u8>, QpgpError>;
 
-    fn encrypt(&self, req: EncryptRequest) -> Result<Vec<u8>, EncryptoError>;
-    fn decrypt(&self, req: DecryptRequest) -> Result<Vec<u8>, EncryptoError>;
+    fn encrypt(&self, req: EncryptRequest) -> Result<Vec<u8>, QpgpError>;
+    fn decrypt(&self, req: DecryptRequest) -> Result<Vec<u8>, QpgpError>;
 
-    fn sign(&self, req: SignRequest) -> Result<Vec<u8>, EncryptoError>;
-    fn verify(&self, req: VerifyRequest) -> Result<VerifyResult, EncryptoError>;
+    fn sign(&self, req: SignRequest) -> Result<Vec<u8>, QpgpError>;
+    fn verify(&self, req: VerifyRequest) -> Result<VerifyResult, QpgpError>;
 
-    fn revoke_key(&self, req: RevokeRequest) -> Result<RevokeResult, EncryptoError>;
-    fn rotate_key(&self, req: RotateRequest) -> Result<RotateResult, EncryptoError>;
+    fn revoke_key(&self, req: RevokeRequest) -> Result<RevokeResult, QpgpError>;
+    fn rotate_key(&self, req: RotateRequest) -> Result<RotateResult, QpgpError>;
 }
