@@ -43,7 +43,7 @@ cargo run -p qpgp-cli -- --passphrase-file ./pass.txt keygen "Alice <alice@examp
 
 Keygen requires a passphrase by default (native). Use `--no-passphrase` to override:
 ```bash
-cargo run -p qpgp-cli -- --no-passphrase keygen "Alice <alice@example.com>"
+cargo run -p qpgp-cli -- keygen --no-passphrase "Alice <alice@example.com>"
 ```
 
 Post-quantum mode (builds OpenSSL locally, then runs with PQC enabled):

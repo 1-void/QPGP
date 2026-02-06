@@ -599,6 +599,18 @@ fn verify_rejects_conflicting_input_args() {
 }
 
 #[test]
+fn passphrase_arg_requires_allow_unsafe_flag() {
+    // This is purely CLI argument hygiene: it should hold even if PQC is unavailable.
+    let home = temp_home();
+    let (code, _stdout, stderr) = run_cli(&["--passphrase", "secret", "info"], &home, None);
+    assert_ne!(code, 0, "expected non-zero exit");
+    assert!(
+        stderr.contains("--passphrase is unsafe"),
+        "unexpected stderr: {stderr}"
+    );
+}
+
+#[test]
 fn keygen_requires_passphrase_without_flag() {
     if !pqc_available() || !pqc_high_available() {
         return;
@@ -614,6 +626,26 @@ fn keygen_requires_passphrase_without_flag() {
         stderr.contains("passphrase required for native keygen"),
         "unexpected stderr: {stderr}"
     );
+}
+
+#[test]
+fn keygen_accepts_passphrase_arg_with_allow_flag() {
+    if !pqc_available() {
+        return;
+    }
+    let home = temp_home();
+    let (code, _stdout, stderr) = run_cli(
+        &[
+            "--allow-unsafe-passphrase",
+            "--passphrase",
+            "secret",
+            "keygen",
+            "Unsafe <unsafe@example.com>",
+        ],
+        &home,
+        None,
+    );
+    assert_eq!(code, 0, "keygen failed: {stderr}");
 }
 
 #[test]

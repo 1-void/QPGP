@@ -28,7 +28,7 @@ We align with the draft’s composite (hybrid) algorithms and IDs:
 - `PQC required` is the default.
 - PQC-only build: non-required policies are rejected and non-PQC artifacts are refused.
 - When required, all outputs are validated and must contain only PQC algorithms:
-  - Encryption: every PKESK must use PQC KEM algorithms.
+  - Encryption: require SEIP v2 (AEAD) using AES-256 + OCB; every PKESK must use PQC KEM algorithms.
   - Signatures: signature algorithms must be PQC; hashes must be >= 256-bit.
 - Decrypt/verify also reject non-PQC artifacts when policy is required.
 

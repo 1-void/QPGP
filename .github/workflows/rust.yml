@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
     - name: Install Rust components
       run: rustup component add rustfmt clippy
     - name: Bootstrap PQC OpenSSL
@@ -45,7 +45,7 @@ jobs:
         "$OPENSSL_DIR/bin/openssl" list -providers > artifacts/openssl-providers.txt || true
         cargo run -p qpgp-cli -- doctor > artifacts/qpgp-doctor.txt
     - name: Upload Build Manifest
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
       with:
         name: build-manifest
         path: artifacts
@@ -67,7 +67,7 @@ jobs:
       OQSPROVIDER_COMMIT: "f076e91faab88871ff1973db0287cc6e4b94c4b0"
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
     - name: Install Rust components
       run: rustup component add rustfmt clippy
     - name: Bootstrap PQC OpenSSL (+ OQS provider)
@@ -92,7 +92,7 @@ jobs:
         "$OPENSSL_DIR/bin/openssl" list -providers > artifacts/openssl-providers.txt || true
         cargo run -p qpgp-cli -- doctor > artifacts/qpgp-doctor.txt
     - name: Upload Build Manifest (OQS)
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
       with:
         name: build-manifest-oqs
         path: artifacts
@@ -104,7 +104,7 @@ jobs:
     permissions:
       contents: write
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       with:
         fetch-depth: 0
     - name: Determine version

@@ -17,13 +17,28 @@ use std::process::Command as ProcessCommand;
     about = "PQC-only OpenPGP-compatible crypto CLI (QPGP)"
 )]
 struct Cli {
-    #[arg(long = "passphrase", global = true)]
+    #[arg(
+        long = "passphrase",
+        global = true,
+        value_name = "PASS",
+        help = "Unsafe passphrase via argv (requires --allow-unsafe-passphrase)",
+        long_help = "Provide a passphrase directly on the command line (unsafe: leaks via shell history and process listings). Requires --allow-unsafe-passphrase. Prefer --passphrase-file."
+    )]
     passphrase: Option<String>,
 
-    #[arg(long = "passphrase-file", global = true)]
+    #[arg(
+        long = "passphrase-file",
+        global = true,
+        value_name = "FILE",
+        help = "Read passphrase from file (recommended)"
+    )]
     passphrase_file: Option<String>,
 
-    #[arg(long = "allow-unsafe-passphrase", global = true)]
+    #[arg(
+        long = "allow-unsafe-passphrase",
+        global = true,
+        help = "Allow using --passphrase (unsafe)"
+    )]
     allow_unsafe_passphrase: bool,
 
     #[arg(long = "allow-insecure-home", global = true)]

@@ -151,12 +151,9 @@ pub fn ensure_pqc_encryption_output(bytes: &[u8]) -> Result<(), PolicyError> {
                         )));
                     }
                     let aead = seip2.aead();
-                    if !matches!(
-                        aead,
-                        AEADAlgorithm::OCB | AEADAlgorithm::EAX | AEADAlgorithm::GCM
-                    ) {
+                    if aead != AEADAlgorithm::OCB {
                         return Err(PolicyError::Violation(format!(
-                            "SEIP v2 uses unsupported AEAD algorithm: {:?}",
+                            "SEIP v2 uses unsupported AEAD algorithm: {:?} (require OCB)",
                             aead
                         )));
                     }

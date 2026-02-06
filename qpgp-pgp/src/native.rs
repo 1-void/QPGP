@@ -270,8 +270,10 @@ impl NativeBackend {
     }
 
     fn load_secret_certs(&self) -> Result<Vec<Cert>, QpgpError> {
-        self.ensure_home_secure_if_exists()?;
-        self.load_certs_from_dir(&self.secret_dir())
+        // Secret-key operations must observe public updates (revocations, new self-sigs, etc.).
+        // We therefore load the merged view and filter to certs that contain secret material.
+        let certs = self.load_all_certs()?;
+        Ok(certs.into_iter().filter(|c| c.is_tsk()).collect())
     }
 
     fn load_certs_from_dir(&self, dir: &Path) -> Result<Vec<Cert>, QpgpError> {
@@ -291,8 +293,19 @@ impl NativeBackend {
             {
                 continue;
             }
-            let bytes = fs::read(entry.path())
-                .map_err(|err| QpgpError::Io(format!("read failed: {err}")))?;
+            // Ignore non-cert artifacts in the keystore directories (editor swap files, notes,
+            // etc.). We are strict for `.pgp` files, but we don't want unrelated junk to brick
+            // key loading.
+            let path = entry.path();
+            let is_pgp = path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("pgp"));
+            if !is_pgp {
+                continue;
+            }
+            let bytes =
+                fs::read(&path).map_err(|err| QpgpError::Io(format!("read failed: {err}")))?;
             let ppr = openpgp::parse::PacketParser::from_bytes(&bytes)
                 .map_err(|err| QpgpError::Backend(format!("parse failed: {err}")))?;
             for cert in openpgp::cert::CertParser::from(ppr) {
@@ -303,6 +316,9 @@ impl NativeBackend {
                                 "non-PQC key material found; PQC-only build".to_string(),
                             ));
                         }
+                        // Defense-in-depth: reject certs whose self-signatures/bindings are not
+                        // PQC-compliant, even if key material is PQC-only.
+                        ensure_cert_signatures_pqc(&cert)?;
                         certs.push(cert);
                     }
                     Err(err) => {
@@ -313,6 +329,43 @@ impl NativeBackend {
         }
 
         Ok(certs)
+    }
+
+    fn load_cert_file(&self, path: &Path) -> Result<Option<Cert>, QpgpError> {
+        if !path.exists() {
+            return Ok(None);
+        }
+        let bytes = fs::read(path).map_err(|err| QpgpError::Io(format!("read failed: {err}")))?;
+        let ppr = openpgp::parse::PacketParser::from_bytes(&bytes)
+            .map_err(|err| QpgpError::Backend(format!("parse failed: {err}")))?;
+        let mut certs = Vec::new();
+        for cert in openpgp::cert::CertParser::from(ppr) {
+            match cert {
+                Ok(cert) => {
+                    if !cert_is_pqc_only(&cert) {
+                        return Err(QpgpError::InvalidInput(
+                            "non-PQC key material found; PQC-only build".to_string(),
+                        ));
+                    }
+                    ensure_cert_signatures_pqc(&cert)?;
+                    certs.push(cert);
+                }
+                Err(err) => {
+                    return Err(QpgpError::Backend(format!("invalid certificate: {err}")));
+                }
+            }
+        }
+        if certs.is_empty() {
+            return Err(QpgpError::Backend(
+                "no certificates found in key file".to_string(),
+            ));
+        }
+        if certs.len() > 1 {
+            return Err(QpgpError::Backend(
+                "multiple certificates found in key file".to_string(),
+            ));
+        }
+        Ok(Some(certs.remove(0)))
     }
 
     fn store_cert(&self, cert: &Cert, secret: bool) -> Result<(), QpgpError> {
@@ -642,11 +695,33 @@ impl Backend for NativeBackend {
                 ));
             }
             ensure_cert_signatures_pqc(cert)?;
+            let fpr = cert.fingerprint().to_hex();
+            let secret_path = self.secret_dir().join(format!("{fpr}.pgp"));
+            let public_path = self.public_dir().join(format!("{fpr}.pgp"));
+
             if cert.is_tsk() {
-                self.store_cert(cert, true)?;
-                self.store_cert(cert, false)?;
+                // If a public cert exists, merge its (public-only) updates into the imported TSK.
+                let merged = match self.load_cert_file(&public_path)? {
+                    Some(existing_pub) => cert
+                        .clone()
+                        .merge_public(existing_pub)
+                        .map_err(|err| QpgpError::Backend(format!("cert merge failed: {err}")))?,
+                    None => cert.clone(),
+                };
+                self.store_cert(&merged, true)?;
+                self.store_cert(&merged, false)?;
             } else {
-                self.store_cert(cert, false)?;
+                // If a matching secret cert exists, merge the imported public updates into it,
+                // then persist both views so secret-key operations can't get stuck on stale packets.
+                if let Some(existing_sec) = self.load_cert_file(&secret_path)? {
+                    let merged = existing_sec
+                        .merge_public(cert.clone())
+                        .map_err(|err| QpgpError::Backend(format!("cert merge failed: {err}")))?;
+                    self.store_cert(&merged, true)?;
+                    self.store_cert(&merged, false)?;
+                } else {
+                    self.store_cert(cert, false)?;
+                }
             }
         }
 
@@ -773,7 +848,7 @@ impl Backend for NativeBackend {
         }
 
         let message = Encryptor::for_recipients(message, recipients)
-            .aead_algo(AEADAlgorithm::default())
+            .aead_algo(AEADAlgorithm::OCB)
             .symmetric_algo(SymmetricAlgorithm::AES256)
             .build()
             .map_err(|err| QpgpError::Backend(format!("encryptor failed: {err}")))?;
@@ -923,8 +998,24 @@ impl Backend for NativeBackend {
                 .finalize()
                 .map_err(|err| QpgpError::Backend(format!("finalize failed: {err}")))?;
             if matches!(req.pqc_policy, PqcPolicy::Required) {
-                let sig_block = cleartext_signature_block(&sink)?;
-                ensure_pqc_signature_output(&sig_block).map_err(policy_error)?;
+                // Enforce PQC policy based on the signature that a verifier actually validates,
+                // not by extracting armor substrings.
+                let helper = NativeHelper::new(vec![cert.clone()], None);
+                let p = &StandardPolicy::new();
+                let mut verifier = openpgp::parse::stream::VerifierBuilder::from_bytes(&sink)
+                    .map_err(|err| QpgpError::Backend(format!("parse failed: {err}")))?
+                    .with_policy(p, None, helper)
+                    .map_err(|err| QpgpError::Backend(format!("verifier failed: {err}")))?;
+                let mut content = Vec::new();
+                let read_ok = verifier.read_to_end(&mut content).is_ok();
+                let helper = verifier.into_helper();
+                let valid = read_ok && helper.valid_signature();
+                if !valid {
+                    return Err(QpgpError::Backend(
+                        "internal error: cleartext signature did not verify".to_string(),
+                    ));
+                }
+                helper.enforce_pqc_verified_signatures()?;
             }
             return Ok(sink);
         }
@@ -950,7 +1041,11 @@ impl Backend for NativeBackend {
         let helper = NativeHelper::new(certs, self.passphrase.clone());
         let p = &StandardPolicy::new();
         if req.cleartext {
-            let sig_block = cleartext_signature_block(&req.signature)?;
+            if !has_cleartext_signature_block(&req.signature) {
+                return Err(QpgpError::InvalidInput(
+                    "cleartext signature block not found".to_string(),
+                ));
+            }
             let mut verifier = openpgp::parse::stream::VerifierBuilder::from_bytes(&req.signature)
                 .map_err(|err| QpgpError::Backend(format!("parse failed: {err}")))?
                 .with_policy(p, None, helper)
@@ -962,13 +1057,7 @@ impl Backend for NativeBackend {
             if require_pqc && valid {
                 helper.enforce_pqc_verified_signatures()?;
             }
-            let signer = if valid {
-                helper
-                    .signer()
-                    .or_else(|| signer_from_signature_bytes(&sig_block))
-            } else {
-                None
-            };
+            let signer = if valid { helper.signer() } else { None };
             return Ok(VerifyResult {
                 valid,
                 signer,
@@ -1468,6 +1557,24 @@ fn cert_matches(cert: &Cert, needle_hex: &str, needle_raw: &str) -> bool {
 
 // signer extraction is handled by the streaming verifier helper.
 
+fn has_cleartext_signature_block(bytes: &[u8]) -> bool {
+    const BEGIN: &str = "-----BEGIN PGP SIGNATURE-----";
+    const END: &str = "-----END PGP SIGNATURE-----";
+    let text = String::from_utf8_lossy(bytes);
+    let mut saw_begin = false;
+    for line in text.split_inclusive('\n') {
+        let trimmed = line.trim_end_matches(['\n', '\r']);
+        if trimmed == BEGIN {
+            saw_begin = true;
+        }
+        if saw_begin && trimmed == END {
+            return true;
+        }
+    }
+    false
+}
+
+#[cfg(test)]
 fn cleartext_signature_block(bytes: &[u8]) -> Result<Vec<u8>, QpgpError> {
     const BEGIN: &str = "-----BEGIN PGP SIGNATURE-----";
     const END: &str = "-----END PGP SIGNATURE-----";
@@ -1512,6 +1619,7 @@ mod tests {
     use openpgp::armor::{Kind as ArmorKind, Writer as ArmorWriter};
     use openpgp::parse::stream::VerifierBuilder;
     use openpgp::serialize::stream::{Message, Signer};
+    use openpgp::types::RevocationStatus;
     use sequoia_openpgp as openpgp;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1587,6 +1695,39 @@ mod tests {
             assert_eq!(mode, 0o600);
         }
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn load_ignores_non_pgp_files_in_keystore_dirs() {
+        if !pqc_available() {
+            eprintln!("pqc not supported in this environment; skipping");
+            return;
+        }
+
+        let home = temp_path("keystore-ignore-non-pgp");
+        let _ = std::fs::remove_dir_all(&home);
+
+        let backend = NativeBackend::from_home(home.clone(), PqcPolicy::Required, false);
+        backend
+            .generate_key(KeyGenParams {
+                user_id: UserId("Ignore <ignore@example.com>".to_string()),
+                algo: None,
+                pqc_policy: PqcPolicy::Required,
+                pqc_level: PqcLevel::Baseline,
+                passphrase: None,
+                allow_unprotected: true,
+            })
+            .expect("keygen");
+
+        // Without filtering, this would previously brick key loading because the keystore
+        // loader tried to parse every file as OpenPGP packets.
+        let junk = home.join("public").join("notes.txt");
+        std::fs::write(&junk, b"not a pgp file").expect("write junk");
+
+        let keys = backend.list_keys().expect("list keys");
+        assert!(!keys.is_empty(), "expected at least one key");
+
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]
@@ -1741,5 +1882,197 @@ mod tests {
             ensure_pqc_signature_output(&extracted).is_err(),
             "expected extracted (real) signature block to be non-PQC"
         );
+    }
+
+    #[test]
+    fn cleartext_sign_allows_delimiter_in_body_and_enforces_pqc_via_verified_sig() {
+        if !pqc_available() {
+            eprintln!("pqc not supported in this environment; skipping");
+            return;
+        }
+
+        let home = temp_path("clearsign-delimiter-home");
+        let _ = std::fs::remove_dir_all(&home);
+
+        let backend = NativeBackend::from_home(home.clone(), PqcPolicy::Required, false);
+        let meta = backend
+            .generate_key(KeyGenParams {
+                user_id: UserId("Alice <alice@example.com>".to_string()),
+                algo: None,
+                pqc_policy: PqcPolicy::Required,
+                pqc_level: PqcLevel::Baseline,
+                passphrase: None,
+                allow_unprotected: true,
+            })
+            .expect("keygen");
+
+        let msg = b"hello\n-----BEGIN PGP SIGNATURE-----\nthis is just text\nworld\n".to_vec();
+        let signed = backend
+            .sign(SignRequest {
+                signer: meta.key_id.clone(),
+                message: msg.clone(),
+                armor: false,
+                cleartext: true,
+                pqc_policy: PqcPolicy::Required,
+            })
+            .expect("clearsign");
+
+        let result = backend
+            .verify(VerifyRequest {
+                message: Vec::new(),
+                signature: signed,
+                cleartext: true,
+                pqc_policy: PqcPolicy::Required,
+            })
+            .expect("verify");
+        assert!(result.valid, "expected cleartext signature to verify");
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn import_public_updates_secret_and_persists_merge() {
+        if !pqc_available() {
+            eprintln!("pqc not supported in this environment; skipping");
+            return;
+        }
+
+        let home = temp_path("import-merge-home");
+        let _ = std::fs::remove_dir_all(&home);
+
+        let backend = NativeBackend::from_home(home.clone(), PqcPolicy::Required, false);
+        let meta = backend
+            .generate_key(KeyGenParams {
+                user_id: UserId("Bob <bob@example.com>".to_string()),
+                algo: None,
+                pqc_policy: PqcPolicy::Required,
+                pqc_level: PqcLevel::Baseline,
+                passphrase: None,
+                allow_unprotected: true,
+            })
+            .expect("keygen");
+
+        // Load the secret cert file from disk.
+        let fpr = meta.key_id.0.clone();
+        let secret_path = home.join("secret").join(format!("{fpr}.pgp"));
+        let public_path = home.join("public").join(format!("{fpr}.pgp"));
+        let secret_cert = backend
+            .load_cert_file(&secret_path)
+            .expect("load secret")
+            .expect("secret exists");
+
+        // Create a cert-level revocation packet using the secret key.
+        let key = secret_cert
+            .primary_key()
+            .key()
+            .clone()
+            .parts_into_secret()
+            .expect("secret parts");
+        let mut keypair = key.into_keypair().expect("keypair");
+        let rev = secret_cert
+            .revoke(
+                &mut keypair,
+                ReasonForRevocation::KeyCompromised,
+                b"test revocation",
+            )
+            .expect("revoke");
+        let (revoked_secret, _) = secret_cert
+            .clone()
+            .insert_packets(rev)
+            .expect("insert revocation");
+
+        // Serialize as a public cert and import it (simulates "public update imported later").
+        let revoked_public_bytes = revoked_secret.to_vec().expect("serialize public");
+        backend
+            .import_key(&revoked_public_bytes)
+            .expect("import public update");
+
+        // Prove persistence by removing the public copy, then ensuring the secret file itself
+        // contains the revocation.
+        std::fs::remove_file(&public_path).expect("remove public cert");
+        let backend2 = NativeBackend::from_home(home.clone(), PqcPolicy::Required, false);
+        let updated_secret = backend2
+            .load_cert_file(&secret_path)
+            .expect("load updated secret")
+            .expect("secret exists");
+        let policy = StandardPolicy::new();
+        assert!(
+            matches!(
+                updated_secret.revocation_status(&policy, None),
+                RevocationStatus::Revoked(_)
+            ),
+            "expected secret cert to be revoked after importing public update"
+        );
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn load_rejects_bad_self_signatures_even_if_key_material_is_pqc() {
+        if !pqc_available() {
+            eprintln!("pqc not supported in this environment; skipping");
+            return;
+        }
+
+        let home = temp_path("load-bad-selfsig-home");
+        let _ = std::fs::remove_dir_all(&home);
+
+        let backend = NativeBackend::from_home(home.clone(), PqcPolicy::Required, false);
+
+        // Generate a valid PQC cert, then corrupt a byte inside a signature packet.
+        let meta = backend
+            .generate_key(KeyGenParams {
+                user_id: UserId("Mallory <mallory@example.com>".to_string()),
+                algo: None,
+                pqc_policy: PqcPolicy::Required,
+                pqc_level: PqcLevel::Baseline,
+                passphrase: None,
+                allow_unprotected: true,
+            })
+            .expect("keygen");
+        let secret_path = home.join("secret").join(format!("{}.pgp", meta.key_id.0));
+        let cert = backend
+            .load_cert_file(&secret_path)
+            .expect("load cert")
+            .expect("exists");
+        let cert_bytes = cert.to_vec().expect("serialize cert");
+
+        // Extract the first signature packet bytes and find it in the serialized cert.
+        let pile = PacketPile::from_bytes(&cert_bytes).expect("parse pile");
+        let sig_packet = pile
+            .descendants()
+            .find(|p| matches!(p, Packet::Signature(_)))
+            .expect("signature packet present");
+        let sig_bytes = sig_packet.to_vec().expect("serialize sig packet");
+        let pos = cert_bytes
+            .windows(sig_bytes.len())
+            .position(|w| w == sig_bytes.as_slice())
+            .expect("signature bytes found in cert bytes");
+
+        let mut corrupted = cert_bytes.clone();
+        // Flip a byte near the end of the signature packet so the packet remains parseable.
+        let flip_at = pos + sig_bytes.len().saturating_sub(2);
+        corrupted[flip_at] ^= 0x01;
+
+        // Write the corrupted cert into the public dir and ensure load rejects it.
+        backend.ensure_dirs().expect("ensure dirs");
+        let pub_path = home.join("public").join("corrupted.pgp");
+        write_atomic(&pub_path, &corrupted, 0o644).expect("write corrupted");
+
+        let err = backend.list_keys().expect_err("expected load to fail");
+        assert!(
+            err.to_string()
+                .to_lowercase()
+                .contains("invalid signatures")
+                || err
+                    .to_string()
+                    .to_lowercase()
+                    .contains("certificate contains invalid signatures")
+                || err.to_string().to_lowercase().contains("weak hash")
+                || err.to_string().to_lowercase().contains("non-pqc signature"),
+            "unexpected error: {err}"
+        );
+
+        let _ = std::fs::remove_dir_all(&home);
     }
 }

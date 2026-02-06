@@ -94,7 +94,7 @@ fn encrypt_with_features(
     let mut encryptor =
         Encryptor::for_recipients(message, recipients).symmetric_algo(SymmetricAlgorithm::AES256);
     if force_aead {
-        encryptor = encryptor.aead_algo(AEADAlgorithm::default());
+        encryptor = encryptor.aead_algo(AEADAlgorithm::OCB);
     }
     let message = encryptor.build()?;
     let mut writer = LiteralWriter::new(message).build()?;
