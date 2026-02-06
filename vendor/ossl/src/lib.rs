@@ -210,6 +210,7 @@ pub struct OsslContext {
 }
 
 static LEGACY_PROVIDER_NAME: &CStr = c"legacy";
+static DEFAULT_PROVIDER_NAME: &CStr = c"default";
 
 impl OsslContext {
     pub fn new_lib_ctx() -> OsslContext {
@@ -231,12 +232,20 @@ impl OsslContext {
         &mut self,
         fname: Option<&Path>,
     ) -> Result<(), Error> {
+        // `OSSL_LIB_CTX_load_config` expects a NUL-terminated C string.
+        // `OsStr::as_encoded_bytes()` is not NUL-terminated, so we must copy.
+        let mut filename_buf: Vec<u8> = Vec::new();
         let filename: *const c_char = match fname {
             Some(f) => {
-                f.as_os_str().as_encoded_bytes().as_ptr() as *const c_char
+                let bytes = f.as_os_str().as_encoded_bytes();
+                filename_buf.reserve(bytes.len() + 1);
+                filename_buf.extend_from_slice(bytes);
+                filename_buf.push(0);
+                filename_buf.as_ptr() as *const c_char
             }
             None => std::ptr::null(),
         };
+
         let ret = unsafe { OSSL_LIB_CTX_load_config(self.ptr(), filename) };
         if ret != 1 {
             trace_ossl!("OSSL_LIB_CTX_load_config()");
@@ -260,6 +269,25 @@ impl OsslContext {
 
         let provider = unsafe {
             OSSL_PROVIDER_load(self.ptr(), LEGACY_PROVIDER_NAME.as_ptr())
+        };
+        if provider.is_null() {
+            Err(Error::new(ErrorKind::OsslError))
+        } else {
+            self.providers.push(provider);
+            Ok(())
+        }
+    }
+
+    pub fn load_default_provider(&mut self) -> Result<(), Error> {
+        if unsafe {
+            OSSL_PROVIDER_available(self.ptr(), DEFAULT_PROVIDER_NAME.as_ptr())
+        } == 1
+        {
+            return Ok(());
+        }
+
+        let provider = unsafe {
+            OSSL_PROVIDER_load(self.ptr(), DEFAULT_PROVIDER_NAME.as_ptr())
         };
         if provider.is_null() {
             Err(Error::new(ErrorKind::OsslError))

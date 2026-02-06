@@ -57,6 +57,8 @@ pub fn context() -> &'static ossl::OsslContext {
         } else {
             let _ = context.load_default_configuration();
         }
+        // Ensure the default provider is available even if config loading fails.
+        let _ = context.load_default_provider();
         // Try to load legacy provider. Ignore the failures as the worst
         // what could happen is that we won't support some of the legacy
         // algorithms.

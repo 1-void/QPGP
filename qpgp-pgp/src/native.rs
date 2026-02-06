@@ -1,13 +1,3 @@
-use qpgp_core::{
-    Backend, DecryptRequest, EncryptRequest, QpgpError, KeyGenParams, KeyId, KeyMeta, PqcLevel,
-    PqcPolicy, RevocationReason, RevokeRequest, RevokeResult, RotateRequest, RotateResult,
-    SignRequest, UserId, VerifyRequest, VerifyResult,
-};
-use qpgp_policy::{
-    cert_has_pqc_encryption_key, cert_has_pqc_signing_key, cert_is_pqc_only,
-    ensure_pqc_encryption_output, ensure_pqc_signature_output, hash_is_pqc_ok, is_pqc_kem_algo,
-    is_pqc_sign_algo, pqc_kem_key_version_ok, pqc_sign_key_version_ok,
-};
 use openpgp::armor::{Kind as ArmorKind, Writer as ArmorWriter};
 use openpgp::cert::prelude::*;
 use openpgp::crypto::{Password, SessionKey};
@@ -23,6 +13,16 @@ use openpgp::serialize::{Serialize, SerializeInto};
 use openpgp::types::ReasonForRevocation;
 use openpgp::types::{AEADAlgorithm, PublicKeyAlgorithm, SymmetricAlgorithm};
 use openpgp::{Cert, KeyHandle, KeyID, Packet, PacketPile, Profile};
+use qpgp_core::{
+    Backend, DecryptRequest, EncryptRequest, KeyGenParams, KeyId, KeyMeta, PqcLevel, PqcPolicy,
+    QpgpError, RevocationReason, RevokeRequest, RevokeResult, RotateRequest, RotateResult,
+    SignRequest, UserId, VerifyRequest, VerifyResult,
+};
+use qpgp_policy::{
+    cert_has_pqc_encryption_key, cert_has_pqc_signing_key, cert_is_pqc_only,
+    ensure_pqc_encryption_output, ensure_pqc_signature_output, hash_is_pqc_ok, is_pqc_kem_algo,
+    is_pqc_sign_algo, pqc_kem_key_version_ok, pqc_sign_key_version_ok,
+};
 use sequoia_openpgp as openpgp;
 use std::collections::HashMap;
 use std::fs;
@@ -120,8 +120,7 @@ impl NativeBackend {
         for entry in
             fs::read_dir(dir).map_err(|err| QpgpError::Io(format!("read dir failed: {err}")))?
         {
-            let entry =
-                entry.map_err(|err| QpgpError::Io(format!("read dir failed: {err}")))?;
+            let entry = entry.map_err(|err| QpgpError::Io(format!("read dir failed: {err}")))?;
             if !entry
                 .file_type()
                 .map_err(|err| QpgpError::Io(format!("stat failed: {err}")))?
@@ -144,9 +143,7 @@ impl NativeBackend {
                         certs.push(cert);
                     }
                     Err(err) => {
-                        return Err(QpgpError::Backend(format!(
-                            "invalid certificate: {err}"
-                        )));
+                        return Err(QpgpError::Backend(format!("invalid certificate: {err}")));
                     }
                 }
             }
@@ -242,10 +239,7 @@ impl NativeBackend {
                 }
             }
         }
-        Err(QpgpError::InvalidInput(format!(
-            "key not found: {}",
-            id.0
-        )))
+        Err(QpgpError::InvalidInput(format!("key not found: {}", id.0)))
     }
 
     fn meta_from_cert(&self, cert: &Cert) -> KeyMeta {
@@ -466,17 +460,13 @@ impl Backend for NativeBackend {
             match cert {
                 Ok(cert) => certs.push(cert),
                 Err(err) => {
-                    return Err(QpgpError::Backend(format!(
-                        "invalid certificate: {err}"
-                    )));
+                    return Err(QpgpError::Backend(format!("invalid certificate: {err}")));
                 }
             }
         }
 
         if certs.is_empty() {
-            return Err(QpgpError::InvalidInput(
-                "no certificates found".to_string(),
-            ));
+            return Err(QpgpError::InvalidInput("no certificates found".to_string()));
         }
 
         for cert in &certs {
@@ -741,9 +731,7 @@ impl Backend for NativeBackend {
         let mut key = key.key().clone();
         if key.secret().is_encrypted() {
             let passphrase = self.passphrase.as_ref().ok_or_else(|| {
-                QpgpError::InvalidInput(
-                    "signing key is encrypted; passphrase required".to_string(),
-                )
+                QpgpError::InvalidInput("signing key is encrypted; passphrase required".to_string())
             })?;
             key = key
                 .decrypt_secret(passphrase)
@@ -864,9 +852,7 @@ impl Backend for NativeBackend {
             .map_err(|err| QpgpError::Backend(format!("secret key load failed: {err}")))?;
         if key.secret().is_encrypted() {
             let passphrase = self.passphrase.as_ref().ok_or_else(|| {
-                QpgpError::InvalidInput(
-                    "secret key is encrypted; passphrase required".to_string(),
-                )
+                QpgpError::InvalidInput("secret key is encrypted; passphrase required".to_string())
             })?;
             key = key
                 .decrypt_secret(passphrase)
@@ -877,9 +863,7 @@ impl Backend for NativeBackend {
             .map_err(|err| QpgpError::Backend(format!("keypair failed: {err}")))?;
 
         let reason = map_revocation_reason(req.reason);
-        let message = req
-            .message
-            .unwrap_or_else(|| "revoked by QPGP".to_string());
+        let message = req.message.unwrap_or_else(|| "revoked by QPGP".to_string());
         let rev = cert
             .revoke(&mut keypair, reason, message.as_bytes())
             .map_err(|err| QpgpError::Backend(format!("revocation failed: {err}")))?;

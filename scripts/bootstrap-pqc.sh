@@ -80,6 +80,12 @@ fi
 
 echo "==> Building OpenSSL $OPENSSL_TAG"
 pushd "$SRC_DIR/openssl" >/dev/null
+# If the source tree was previously configured with a different prefix,
+# OpenSSL may keep stale install metadata (e.g. installdata.pm), which
+# then poisons the generated pkg-config files. Reset to a clean state.
+if [[ -f Makefile ]]; then
+  make distclean >/dev/null 2>&1 || true
+fi
 ./Configure --prefix="$OPENSSL_PREFIX" --openssldir="$OPENSSL_PREFIX" shared
 make -j"$(nproc)"
 make install_sw

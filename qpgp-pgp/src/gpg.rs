@@ -1,7 +1,7 @@
 use qpgp_core::{
-    Backend, DecryptRequest, EncryptRequest, QpgpError, KeyGenParams, KeyId, KeyMeta,
-    PqcPolicy, RevokeRequest, RevokeResult, RotateRequest, RotateResult, SignRequest, UserId,
-    VerifyRequest, VerifyResult,
+    Backend, DecryptRequest, EncryptRequest, KeyGenParams, KeyId, KeyMeta, PqcPolicy, QpgpError,
+    RevokeRequest, RevokeResult, RotateRequest, RotateResult, SignRequest, UserId, VerifyRequest,
+    VerifyResult,
 };
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -381,18 +381,16 @@ impl Backend for GpgBackend {
     fn verify(&self, req: VerifyRequest) -> Result<VerifyResult, QpgpError> {
         self.ensure_pqc_policy(&req.pqc_policy)?;
         if req.cleartext {
-            return Err(QpgpError::Backend(
-                "gpg backend is disabled".to_string(),
-            ));
+            return Err(QpgpError::Backend("gpg backend is disabled".to_string()));
         }
-        let mut message_file = NamedTempFile::new()
-            .map_err(|err| QpgpError::Io(format!("temp file error: {err}")))?;
+        let mut message_file =
+            NamedTempFile::new().map_err(|err| QpgpError::Io(format!("temp file error: {err}")))?;
         message_file
             .write_all(&req.message)
             .map_err(|err| QpgpError::Io(format!("temp write error: {err}")))?;
 
-        let mut sig_file = NamedTempFile::new()
-            .map_err(|err| QpgpError::Io(format!("temp file error: {err}")))?;
+        let mut sig_file =
+            NamedTempFile::new().map_err(|err| QpgpError::Io(format!("temp file error: {err}")))?;
         sig_file
             .write_all(&req.signature)
             .map_err(|err| QpgpError::Io(format!("temp write error: {err}")))?;
