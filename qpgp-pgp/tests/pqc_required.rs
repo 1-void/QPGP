@@ -7,7 +7,6 @@ mod common;
 use common::{require_pqc, set_home, set_temp_home};
 use qpgp_pgp::NativeBackend;
 use sequoia_openpgp::serialize::SerializeInto;
-use std::ffi::OsString;
 
 fn assert_pqc_encryption(bytes: &[u8]) {
     use openpgp::parse::Parse;
@@ -86,32 +85,6 @@ fn generate_classic_cert_bytes(user_id: &str) -> Vec<u8> {
         .expect("generate cert");
 
     cert.as_tsk().to_vec().expect("serialize secret cert")
-}
-
-struct EnvVarGuard {
-    key: &'static str,
-    prev: Option<OsString>,
-}
-
-impl Drop for EnvVarGuard {
-    fn drop(&mut self) {
-        // Safety: tests serialize env changes via set_home().
-        unsafe {
-            match &self.prev {
-                Some(value) => std::env::set_var(self.key, value),
-                None => std::env::remove_var(self.key),
-            }
-        }
-    }
-}
-
-fn set_env_var(key: &'static str, value: &str) -> EnvVarGuard {
-    let prev = std::env::var_os(key);
-    // Safety: tests serialize env changes via set_home().
-    unsafe {
-        std::env::set_var(key, value);
-    }
-    EnvVarGuard { key, prev }
 }
 
 #[test]

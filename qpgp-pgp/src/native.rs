@@ -97,7 +97,12 @@ impl NativeBackend {
     }
 
     #[cfg(unix)]
-    fn ensure_secure_dir(&self, path: &Path, what: &str, require_private: bool) -> Result<(), QpgpError> {
+    fn ensure_secure_dir(
+        &self,
+        path: &Path,
+        what: &str,
+        require_private: bool,
+    ) -> Result<(), QpgpError> {
         use std::os::unix::fs::MetadataExt;
 
         let meta = fs::symlink_metadata(path)
@@ -431,7 +436,10 @@ impl NativeBackend {
         if prefer_pqc {
             let (requested, fallback) = match params.pqc_level {
                 PqcLevel::Baseline => (CipherSuite::MLDSA65_Ed25519, None),
-                PqcLevel::High => (CipherSuite::MLDSA87_Ed448, Some(CipherSuite::MLDSA65_Ed25519)),
+                PqcLevel::High => (
+                    CipherSuite::MLDSA87_Ed448,
+                    Some(CipherSuite::MLDSA65_Ed25519),
+                ),
             };
             if pqc_available_for_suite(requested) {
                 return Ok(requested);
@@ -1410,8 +1418,8 @@ fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> Result<(), QpgpError> {
     {
         // Ensure the directory entry is durable too (rename is not guaranteed
         // to be persisted without syncing the containing directory).
-        let dirfd = fs::File::open(dir)
-            .map_err(|err| QpgpError::Io(format!("open dir failed: {err}")))?;
+        let dirfd =
+            fs::File::open(dir).map_err(|err| QpgpError::Io(format!("open dir failed: {err}")))?;
         dirfd
             .sync_all()
             .map_err(|err| QpgpError::Io(format!("sync dir failed: {err}")))?;
@@ -1500,10 +1508,10 @@ fn cleartext_signature_block(bytes: &[u8]) -> Result<Vec<u8>, QpgpError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use openpgp::Profile;
     use openpgp::armor::{Kind as ArmorKind, Writer as ArmorWriter};
     use openpgp::parse::stream::VerifierBuilder;
     use openpgp::serialize::stream::{Message, Signer};
-    use openpgp::Profile;
     use sequoia_openpgp as openpgp;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1647,7 +1655,11 @@ mod tests {
             .for_signing()
             .next()
             .expect("pqc signing key");
-        let pqc_keypair = pqc_signing_key.key().clone().into_keypair().expect("pqc keypair");
+        let pqc_keypair = pqc_signing_key
+            .key()
+            .clone()
+            .into_keypair()
+            .expect("pqc keypair");
 
         let mut pqc_sig = Vec::new();
         {
@@ -1678,9 +1690,7 @@ mod tests {
                 .build()
                 .expect("cleartext build");
 
-            signer
-                .write_all(b"hello\n")
-                .expect("write 1");
+            signer.write_all(b"hello\n").expect("write 1");
             signer
                 .write_all(b"note: embedded signature block below (should not be trusted):\n")
                 .expect("write 2");
@@ -1689,9 +1699,7 @@ mod tests {
             signer
                 .write_all(&embedded_pqc_block)
                 .expect("write embedded block");
-            signer
-                .write_all(b"\nworld\n")
-                .expect("write 3");
+            signer.write_all(b"\nworld\n").expect("write 3");
             signer.finalize().expect("finalize");
         }
 
@@ -1715,7 +1723,10 @@ mod tests {
         let mut content = Vec::new();
         let read_ok = verifier.read_to_end(&mut content).is_ok();
         let helper = verifier.into_helper();
-        assert!(read_ok && helper.valid_signature(), "expected classic signature to verify");
+        assert!(
+            read_ok && helper.valid_signature(),
+            "expected classic signature to verify"
+        );
 
         // PQC enforcement must fail: the verified signature is classic (Ed25519).
         assert!(

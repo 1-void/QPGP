@@ -91,8 +91,8 @@ fn encrypt_with_features(
 
     let mut sink = Vec::new();
     let message = Message::new(&mut sink);
-    let mut encryptor = Encryptor::for_recipients(message, recipients)
-        .symmetric_algo(SymmetricAlgorithm::AES256);
+    let mut encryptor =
+        Encryptor::for_recipients(message, recipients).symmetric_algo(SymmetricAlgorithm::AES256);
     if force_aead {
         encryptor = encryptor.aead_algo(AEADAlgorithm::default());
     }

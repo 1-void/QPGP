@@ -143,19 +143,12 @@ fn load_all_certs_merges_public_updates_into_secret_store() {
             b"test revocation",
         )
         .expect("make revocation");
-    let (revoked_cert, _) = cert
-        .clone()
-        .insert_packets(rev)
-        .expect("insert revocation");
+    let (revoked_cert, _) = cert.clone().insert_packets(rev).expect("insert revocation");
     let revoked_public = revoked_cert.to_vec().expect("serialize revoked cert");
 
     let home = PathBuf::from(std::env::var("QPGP_HOME").expect("QPGP_HOME"));
-    let public_path = home
-        .join("public")
-        .join(format!("{}.pgp", meta.key_id.0));
-    let secret_path = home
-        .join("secret")
-        .join(format!("{}.pgp", meta.key_id.0));
+    let public_path = home.join("public").join(format!("{}.pgp", meta.key_id.0));
+    let secret_path = home.join("secret").join(format!("{}.pgp", meta.key_id.0));
 
     std::fs::write(&public_path, revoked_public).expect("write public update");
     std::fs::write(&secret_path, tsk_bytes).expect("ensure secret stays stale");

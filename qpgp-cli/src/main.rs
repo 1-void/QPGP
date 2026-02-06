@@ -184,12 +184,13 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     let pqc_policy = PqcPolicy::Required;
 
-    if cli.allow_insecure_home {
-        if let Ok(home) = std::env::var("QPGP_HOME")
-            && !std::path::Path::new(&home).is_absolute()
-        {
-            eprintln!("warning: QPGP_HOME is relative and --allow-insecure-home was used; this is insecure and should only be used for testing");
-        }
+    if cli.allow_insecure_home
+        && let Ok(home) = std::env::var("QPGP_HOME")
+        && !std::path::Path::new(&home).is_absolute()
+    {
+        eprintln!(
+            "warning: QPGP_HOME is relative and --allow-insecure-home was used; this is insecure and should only be used for testing"
+        );
     }
 
     if cli.passphrase.is_some() && !cli.allow_unsafe_passphrase {
@@ -274,7 +275,10 @@ fn main() -> Result<()> {
                         println!("openssl: {first}");
                     }
                 }
-                if let Ok(out) = ProcessCommand::new(bin).args(["list", "-providers"]).output() {
+                if let Ok(out) = ProcessCommand::new(bin)
+                    .args(["list", "-providers"])
+                    .output()
+                {
                     let text = String::from_utf8_lossy(&out.stdout);
                     let providers = text.lines().take(12).collect::<Vec<_>>().join("\n");
                     if !providers.trim().is_empty() {

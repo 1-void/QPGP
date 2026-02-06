@@ -4,8 +4,8 @@ use openpgp::PacketPile;
 use openpgp::packet::Tag;
 use openpgp::parse::Parse;
 use openpgp::policy::StandardPolicy;
-use openpgp::types::{HashAlgorithm, PublicKeyAlgorithm};
 use openpgp::types::{AEADAlgorithm, SymmetricAlgorithm};
+use openpgp::types::{HashAlgorithm, PublicKeyAlgorithm};
 use sequoia_openpgp as openpgp;
 
 #[derive(Debug)]
@@ -151,8 +151,10 @@ pub fn ensure_pqc_encryption_output(bytes: &[u8]) -> Result<(), PolicyError> {
                         )));
                     }
                     let aead = seip2.aead();
-                    if !matches!(aead, AEADAlgorithm::OCB | AEADAlgorithm::EAX | AEADAlgorithm::GCM)
-                    {
+                    if !matches!(
+                        aead,
+                        AEADAlgorithm::OCB | AEADAlgorithm::EAX | AEADAlgorithm::GCM
+                    ) {
                         return Err(PolicyError::Violation(format!(
                             "SEIP v2 uses unsupported AEAD algorithm: {:?}",
                             aead
