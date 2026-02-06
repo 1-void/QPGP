@@ -121,16 +121,14 @@ pub fn ensure_pqc_encryption_output(bytes: &[u8]) -> Result<(), PolicyError> {
     let pile = PacketPile::from_bytes(bytes)
         .map_err(|err| PolicyError::Parse(format!("parse output failed: {err}")))?;
     let mut pkesk_count = 0usize;
-    let mut pkesk_v3_non_compat = 0usize;
+    let mut pkesk_v3_count = 0usize;
     let mut seip_count = 0usize;
     let mut seip_v2_count = 0usize;
     for packet in pile.descendants() {
         if let Packet::PKESK(pkesk) = packet {
             pkesk_count += 1;
-            // PKESK v3 is used with v4 keys. The PQC draft allows a v4 exception
-            // for ML-KEM-768+X25519 encryption keys; preserve that interop.
-            if pkesk.version() == 3 && pkesk.pk_algo() != PublicKeyAlgorithm::MLKEM768_X25519 {
-                pkesk_v3_non_compat += 1;
+            if pkesk.version() == 3 {
+                pkesk_v3_count += 1;
             }
             if !is_pqc_kem_algo(pkesk.pk_algo()) {
                 return Err(PolicyError::Violation(format!(
@@ -193,9 +191,13 @@ pub fn ensure_pqc_encryption_output(bytes: &[u8]) -> Result<(), PolicyError> {
             "AEAD is required (SEIP v2 missing)".to_string(),
         ));
     }
-    if pkesk_v3_non_compat > 0 {
+    // RFC9580 disallows combining PKESK v3 (which carries a plaintext cipher
+    // identifier) with SEIP v2 (which also carries cipher info). The PQC draft's
+    // v4-key exception for algorithm 35 is about *key versions*, not PKESK packet
+    // versions; we therefore reject any PKESK v3 when SEIP v2 is present.
+    if seip_v2_count > 0 && pkesk_v3_count > 0 {
         return Err(PolicyError::Violation(
-            "PKESK v3 is only allowed for ML-KEM-768+X25519 recipients".to_string(),
+            "PKESK v3 is not allowed with SEIP v2".to_string(),
         ));
     }
     Ok(())
@@ -250,11 +252,6 @@ pub fn ensure_pqc_signature_output(bytes: &[u8]) -> Result<(), PolicyError> {
     }
     if sig_count == 0 {
         return Err(PolicyError::Violation("no signatures found".to_string()));
-    }
-    if sig_count > 1 {
-        return Err(PolicyError::Violation(format!(
-            "multiple signatures found ({sig_count}); expected exactly one"
-        )));
     }
     Ok(())
 }

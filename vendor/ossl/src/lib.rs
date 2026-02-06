@@ -783,6 +783,10 @@ impl<'a> OsslParamBuilder<'a> {
     /// returned by OpenSSL and point to temporary internal buffers.
     pub fn copy_params(&mut self, params: &[OSSL_PARAM]) -> Result<(), Error> {
         for p in params {
+            // Stop at the terminating end marker if the caller included it.
+            if p.key.is_null() {
+                break;
+            }
             if p.data.is_null() {
                 return Err(Error::new(ErrorKind::NullPtr));
             }
@@ -959,6 +963,9 @@ impl<'a> OsslParam<'a> {
             trace_ossl!("OSSL_PARAM_get_octet_string_ptr()");
             return Err(Error::new(ErrorKind::OsslError));
         }
+        if buf.is_null() && buf_len != 0 {
+            return Err(Error::new(ErrorKind::NullPtr));
+        }
         let octet =
             unsafe { std::slice::from_raw_parts(buf as *const u8, buf_len) };
         Ok(octet)
@@ -976,6 +983,9 @@ impl<'a> OsslParam<'a> {
         if res != 1 {
             trace_ossl!("OSSL_PARAM_get_utf8_string_ptr()");
             return Err(Error::new(ErrorKind::OsslError));
+        }
+        if ptr.is_null() {
+            return Err(Error::new(ErrorKind::NullPtr));
         }
         Ok(unsafe { CStr::from_ptr(ptr) })
     }

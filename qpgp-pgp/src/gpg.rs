@@ -1,7 +1,7 @@
 use qpgp_core::{
-    Backend, DecryptRequest, EncryptRequest, KeyGenParams, KeyId, KeyMeta, PqcPolicy, QpgpError,
-    RevokeRequest, RevokeResult, RotateRequest, RotateResult, SignRequest, UserId, VerifyRequest,
-    VerifyResult,
+    Backend, DecryptRequest, EncryptRequest, ImportRequest, KeyGenParams, KeyId, KeyMeta,
+    PqcPolicy, QpgpError, RevokeRequest, RevokeResult, RotateRequest, RotateResult, SignRequest,
+    UserId, VerifyRequest, VerifyResult,
 };
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -311,9 +311,10 @@ impl Backend for GpgBackend {
         ))
     }
 
-    fn import_key(&self, bytes: &[u8]) -> Result<KeyMeta, QpgpError> {
+    fn import_key(&self, req: ImportRequest) -> Result<KeyMeta, QpgpError> {
         self.ensure_pqc_only_backend()?;
-        let output = self.run_gpg(&["--status-fd", "1", "--import"], Some(bytes))?;
+        let _ = req.allow_unprotected;
+        let output = self.run_gpg(&["--status-fd", "1", "--import"], Some(&req.bytes))?;
         let status_output = self.output_or_error(output)?;
         if let Some(key_id) = self.import_key_id(&status_output) {
             return Ok(KeyMeta {
@@ -406,9 +407,12 @@ impl Backend for GpgBackend {
             None,
         )?;
 
+        let signer = Self::parse_verify_status(&output.stdout);
+        let signers = signer.clone().into_iter().collect();
         Ok(VerifyResult {
             valid: output.status.success(),
-            signer: Self::parse_verify_status(&output.stdout),
+            signer,
+            signers,
             message: None,
         })
     }

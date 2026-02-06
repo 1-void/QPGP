@@ -12,11 +12,11 @@ use openpgp::serialize::stream::{Armorer, Encryptor, LiteralWriter, Message, Sig
 use openpgp::serialize::{Serialize, SerializeInto};
 use openpgp::types::ReasonForRevocation;
 use openpgp::types::{AEADAlgorithm, HashAlgorithm, PublicKeyAlgorithm, SymmetricAlgorithm};
-use openpgp::{Cert, KeyHandle, KeyID, Packet, PacketPile, Profile};
+use openpgp::{Cert, KeyHandle, KeyID, Profile};
 use qpgp_core::{
-    Backend, DecryptRequest, EncryptRequest, KeyGenParams, KeyId, KeyMeta, PqcLevel, PqcPolicy,
-    QpgpError, RevocationReason, RevokeRequest, RevokeResult, RotateRequest, RotateResult,
-    SignRequest, UserId, VerifyRequest, VerifyResult,
+    Backend, DecryptRequest, EncryptRequest, ImportRequest, KeyGenParams, KeyId, KeyMeta, PqcLevel,
+    PqcPolicy, QpgpError, RevocationReason, RevokeRequest, RevokeResult, RotateRequest,
+    RotateResult, SignRequest, UserId, VerifyRequest, VerifyResult,
 };
 use qpgp_policy::{
     cert_has_pqc_encryption_key, cert_has_pqc_signing_key, cert_is_pqc_only,
@@ -214,13 +214,61 @@ impl NativeBackend {
 
     fn ensure_dirs(&self) -> Result<(), QpgpError> {
         self.ensure_home_secure_if_exists()?;
+        #[cfg(unix)]
+        {
+            use std::io::ErrorKind;
+            use std::os::unix::fs::DirBuilderExt;
+
+            let mut b = fs::DirBuilder::new();
+            b.recursive(true);
+            b.mode(0o700);
+
+            // Create with a restrictive mode from the start (still subject to umask),
+            // then chmod + re-check below for defense-in-depth.
+            match b.create(&self.home) {
+                Ok(()) => {}
+                Err(err) if err.kind() == ErrorKind::AlreadyExists => {}
+                Err(err) => return Err(QpgpError::Io(format!("create dir failed: {err}"))),
+            }
+        }
+        #[cfg(not(unix))]
         fs::create_dir_all(&self.home)
             .map_err(|err| QpgpError::Io(format!("create dir failed: {err}")))?;
         // Ensure we never create children under a symlinked home directory.
         self.ensure_dir_not_symlink(&self.home, "QPGP_HOME")?;
+        #[cfg(unix)]
+        {
+            use std::io::ErrorKind;
+            use std::os::unix::fs::DirBuilderExt;
+
+            let mut b = fs::DirBuilder::new();
+            b.recursive(true);
+            b.mode(0o700);
+            match b.create(self.public_dir()) {
+                Ok(()) => {}
+                Err(err) if err.kind() == ErrorKind::AlreadyExists => {}
+                Err(err) => return Err(QpgpError::Io(format!("create dir failed: {err}"))),
+            }
+        }
+        #[cfg(not(unix))]
         fs::create_dir_all(self.public_dir())
             .map_err(|err| QpgpError::Io(format!("create dir failed: {err}")))?;
         self.ensure_dir_not_symlink(&self.public_dir(), "QPGP public dir")?;
+        #[cfg(unix)]
+        {
+            use std::io::ErrorKind;
+            use std::os::unix::fs::DirBuilderExt;
+
+            let mut b = fs::DirBuilder::new();
+            b.recursive(true);
+            b.mode(0o700);
+            match b.create(self.secret_dir()) {
+                Ok(()) => {}
+                Err(err) if err.kind() == ErrorKind::AlreadyExists => {}
+                Err(err) => return Err(QpgpError::Io(format!("create dir failed: {err}"))),
+            }
+        }
+        #[cfg(not(unix))]
         fs::create_dir_all(self.secret_dir())
             .map_err(|err| QpgpError::Io(format!("create dir failed: {err}")))?;
         self.ensure_dir_not_symlink(&self.secret_dir(), "QPGP secret dir")?;
@@ -388,6 +436,84 @@ impl NativeBackend {
         let mode = if secret { 0o600 } else { 0o644 };
         write_atomic(&path, &bytes, mode)?;
         Ok(())
+    }
+
+    fn prepare_imported_secret_cert(
+        &self,
+        cert: &Cert,
+        allow_unprotected: bool,
+    ) -> Result<Cert, QpgpError> {
+        if !cert.is_tsk() {
+            return Ok(cert.clone());
+        }
+
+        let unencrypted = cert.keys().unencrypted_secret().count();
+        if unencrypted == 0 {
+            // If a passphrase is configured, ensure it actually unlocks the imported secret
+            // keys to avoid persisting unusable secret material.
+            if let Some(passphrase) = self.passphrase.as_ref() {
+                for ka in cert.keys().secret() {
+                    let key = ka.key();
+                    if key.secret().is_encrypted() {
+                        key.clone().decrypt_secret(passphrase).map_err(|_| {
+                            QpgpError::InvalidInput(
+                                "imported secret key is encrypted with a different passphrase"
+                                    .to_string(),
+                            )
+                        })?;
+                    }
+                }
+            }
+            return Ok(cert.clone());
+        }
+
+        let Some(passphrase) = self.passphrase.as_ref() else {
+            if allow_unprotected {
+                return Ok(cert.clone());
+            }
+            return Err(QpgpError::InvalidInput(
+                "imported secret key material is unencrypted; configure a passphrase or pass --allow-unprotected-import".to_string(),
+            ));
+        };
+
+        // Encrypt any unencrypted secret keys using the configured passphrase.
+        let primary_fpr = cert.primary_key().key().fingerprint();
+        let mut out = cert.clone();
+        for ka in cert.clone().keys().secret() {
+            let key = ka.key();
+            let is_primary = key.fingerprint() == primary_fpr;
+
+            if key.secret().is_encrypted() {
+                // Ensure it is decryptable with the configured passphrase.
+                key.clone().decrypt_secret(passphrase).map_err(|_| {
+                    QpgpError::InvalidInput(
+                        "imported secret key is encrypted with a different passphrase".to_string(),
+                    )
+                })?;
+                continue;
+            }
+
+            let encrypted = key
+                .clone()
+                .encrypt_secret(passphrase)
+                .map_err(|err| QpgpError::Backend(format!("secret key encryption failed: {err}")))?;
+            out = if is_primary {
+                out.insert_packets(encrypted.role_into_primary())
+                    .map_err(|err| QpgpError::Backend(format!("cert update failed: {err}")))?
+                    .0
+            } else {
+                out.insert_packets(encrypted.role_into_subordinate())
+                    .map_err(|err| QpgpError::Backend(format!("cert update failed: {err}")))?
+                    .0
+            };
+        }
+
+        if out.keys().unencrypted_secret().count() != 0 {
+            return Err(QpgpError::Backend(
+                "failed to encrypt all imported secret key material".to_string(),
+            ));
+        }
+        Ok(out)
     }
 
     fn find_cert_candidates(
@@ -668,11 +794,11 @@ impl Backend for NativeBackend {
         Ok(self.meta_from_cert(&cert))
     }
 
-    fn import_key(&self, bytes: &[u8]) -> Result<KeyMeta, QpgpError> {
+    fn import_key(&self, req: ImportRequest) -> Result<KeyMeta, QpgpError> {
         self.ensure_pqc_only(&self.pqc_policy)?;
         self.ensure_dirs()?;
 
-        let ppr = openpgp::parse::PacketParser::from_bytes(bytes)
+        let ppr = openpgp::parse::PacketParser::from_bytes(&req.bytes)
             .map_err(|err| QpgpError::Backend(format!("parse failed: {err}")))?;
         let mut certs = Vec::new();
         for cert in openpgp::cert::CertParser::from(ppr) {
@@ -700,13 +826,19 @@ impl Backend for NativeBackend {
             let public_path = self.public_dir().join(format!("{fpr}.pgp"));
 
             if cert.is_tsk() {
+                // Enforce that secret material is protected at rest unless explicitly allowed.
+                // If a backend passphrase is configured, we transparently encrypt unprotected
+                // secret key material on import.
+                let mut prepared = cert.clone();
+                prepared = self
+                    .prepare_imported_secret_cert(&prepared, req.allow_unprotected)?;
+
                 // If a public cert exists, merge its (public-only) updates into the imported TSK.
                 let merged = match self.load_cert_file(&public_path)? {
-                    Some(existing_pub) => cert
-                        .clone()
+                    Some(existing_pub) => prepared
                         .merge_public(existing_pub)
                         .map_err(|err| QpgpError::Backend(format!("cert merge failed: {err}")))?,
-                    None => cert.clone(),
+                    None => prepared,
                 };
                 self.store_cert(&merged, true)?;
                 self.store_cert(&merged, false)?;
@@ -881,7 +1013,8 @@ impl Backend for NativeBackend {
                 .secret()
                 .any(|key| key.key().secret().is_encrypted())
         });
-        let helper = NativeHelper::new(certs, self.passphrase.clone());
+        let helper = NativeHelper::new(certs, self.passphrase.clone())
+            .with_allow_revoked_decryption_keys(req.allow_revoked_keys);
         let p = &StandardPolicy::new();
         let mut decryptor = match DecryptorBuilder::from_bytes(&req.ciphertext)
             .map_err(|err| QpgpError::Backend(format!("parse failed: {err}")))?
@@ -1058,9 +1191,11 @@ impl Backend for NativeBackend {
                 helper.enforce_pqc_verified_signatures()?;
             }
             let signer = if valid { helper.signer() } else { None };
+            let signers = if valid { helper.good_signers() } else { Vec::new() };
             return Ok(VerifyResult {
                 valid,
                 signer,
+                signers,
                 message: if valid { Some(content) } else { None },
             });
         }
@@ -1076,10 +1211,9 @@ impl Backend for NativeBackend {
         if require_pqc && valid {
             helper.enforce_pqc_verified_signatures()?;
         }
-        let signer = if valid {
-            helper
-                .signer()
-                .or_else(|| signer_from_signature_bytes(&req.signature))
+        let signers = if valid { helper.good_signers() } else { Vec::new() };
+        let signer = if valid && signers.len() == 1 {
+            signers.first().cloned()
         } else {
             None
         };
@@ -1087,6 +1221,7 @@ impl Backend for NativeBackend {
         Ok(VerifyResult {
             valid,
             signer,
+            signers,
             message: None,
         })
     }
@@ -1182,12 +1317,15 @@ impl Backend for NativeBackend {
 struct NativeHelper {
     certs: Vec<Cert>,
     passphrase: Option<Password>,
+    allow_revoked_decryption_keys: bool,
     signer: Option<KeyId>,
     multiple_signers: bool,
     saw_signature: bool,
     has_valid_signature: bool,
     // Metadata for signatures that were actually verified as good by Sequoia.
     good_signatures: Vec<(PublicKeyAlgorithm, HashAlgorithm, u8)>,
+    // Unique signers (full fingerprints) for signatures that were verified as good.
+    good_signers: Vec<KeyId>,
 }
 
 impl NativeHelper {
@@ -1195,12 +1333,19 @@ impl NativeHelper {
         Self {
             certs,
             passphrase,
+            allow_revoked_decryption_keys: false,
             signer: None,
             multiple_signers: false,
             saw_signature: false,
             has_valid_signature: false,
             good_signatures: Vec::new(),
+            good_signers: Vec::new(),
         }
+    }
+
+    fn with_allow_revoked_decryption_keys(mut self, allow: bool) -> Self {
+        self.allow_revoked_decryption_keys = allow;
+        self
     }
 
     fn signer(&self) -> Option<KeyId> {
@@ -1209,6 +1354,10 @@ impl NativeHelper {
         } else {
             self.signer.clone()
         }
+    }
+
+    fn good_signers(&self) -> Vec<KeyId> {
+        self.good_signers.clone()
     }
 
     fn valid_signature(&self) -> bool {
@@ -1224,31 +1373,26 @@ impl NativeHelper {
                 "policy violation: no valid signatures found".to_string(),
             ));
         }
-        if good.len() > 1 {
-            return Err(QpgpError::Backend(format!(
-                "policy violation: multiple signatures found ({}); expected exactly one",
-                good.len()
-            )));
-        }
 
-        let (pk_algo, hash_algo, sig_version) = good[0];
-        if !is_pqc_sign_algo(pk_algo) {
-            return Err(QpgpError::Backend(format!(
-                "policy violation: non-PQC signature found: {:?}",
-                pk_algo
-            )));
-        }
-        if sig_version < 6 {
-            return Err(QpgpError::Backend(format!(
-                "policy violation: signature version is v{}",
-                sig_version
-            )));
-        }
-        if !hash_is_pqc_ok(hash_algo) {
-            return Err(QpgpError::Backend(format!(
-                "policy violation: weak hash used: {:?}",
-                hash_algo
-            )));
+        for (pk_algo, hash_algo, sig_version) in good.iter().copied() {
+            if !is_pqc_sign_algo(pk_algo) {
+                return Err(QpgpError::Backend(format!(
+                    "policy violation: non-PQC signature found: {:?}",
+                    pk_algo
+                )));
+            }
+            if sig_version < 6 {
+                return Err(QpgpError::Backend(format!(
+                    "policy violation: signature version is v{}",
+                    sig_version
+                )));
+            }
+            if !hash_is_pqc_ok(hash_algo) {
+                return Err(QpgpError::Backend(format!(
+                    "policy violation: weak hash used: {:?}",
+                    hash_algo
+                )));
+            }
         }
         Ok(())
     }
@@ -1292,6 +1436,9 @@ impl VerificationHelper for NativeHelper {
                             good.sig.version(),
                         ));
                         let fpr = good.ka.cert().fingerprint().to_hex();
+                        if !self.good_signers.iter().any(|s| s.0 == fpr) {
+                            self.good_signers.push(KeyId(fpr.clone()));
+                        }
                         match &self.signer {
                             None => self.signer = Some(KeyId(fpr)),
                             Some(existing) if existing.0 == fpr => {}
@@ -1305,21 +1452,6 @@ impl VerificationHelper for NativeHelper {
     }
 }
 
-fn signer_from_signature_bytes(bytes: &[u8]) -> Option<KeyId> {
-    let pile = PacketPile::from_bytes(bytes).ok()?;
-    for packet in pile.descendants() {
-        if let Packet::Signature(sig) = packet
-            && let Some(issuer) = sig.get_issuers().into_iter().next()
-        {
-            return Some(match issuer {
-                KeyHandle::Fingerprint(fpr) => KeyId(fpr.to_hex()),
-                KeyHandle::KeyID(id) => KeyId(id.to_hex()),
-            });
-        }
-    }
-    None
-}
-
 impl DecryptionHelper for NativeHelper {
     fn decrypt(
         &mut self,
@@ -1331,15 +1463,35 @@ impl DecryptionHelper for NativeHelper {
         for pkesk in pkesks {
             for cert in &self.certs {
                 let policy = StandardPolicy::new();
-                for key in cert
-                    .keys()
-                    .secret()
-                    .with_policy(&policy, None)
-                    .supported()
-                    .alive()
-                    .revoked(false)
-                    .for_transport_encryption()
-                {
+                if !self.allow_revoked_decryption_keys {
+                    // Sequoia's key iterator filtering is primarily key-centric.
+                    // For decryption we also enforce cert-level revocation unless the
+                    // caller explicitly opts in (archival recovery).
+                    if matches!(
+                        cert.revocation_status(&policy, None),
+                        openpgp::types::RevocationStatus::Revoked(_)
+                    ) {
+                        continue;
+                    }
+                }
+                let keys = if self.allow_revoked_decryption_keys {
+                    cert.keys()
+                        .secret()
+                        .with_policy(&policy, None)
+                        .supported()
+                        .alive()
+                        .for_transport_encryption()
+                } else {
+                    cert.keys()
+                        .secret()
+                        .with_policy(&policy, None)
+                        .supported()
+                        .alive()
+                        .revoked(false)
+                        .for_transport_encryption()
+                };
+
+                for key in keys {
                     let mut key = key.key().clone();
                     if key.secret().is_encrypted() {
                         let passphrase = match self.passphrase.as_ref() {
@@ -1621,6 +1773,7 @@ mod tests {
     use openpgp::serialize::stream::{Message, Signer};
     use openpgp::types::RevocationStatus;
     use sequoia_openpgp as openpgp;
+    use sequoia_openpgp::{Packet, PacketPile};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_path(name: &str) -> PathBuf {
@@ -1728,16 +1881,6 @@ mod tests {
         assert!(!keys.is_empty(), "expected at least one key");
 
         let _ = std::fs::remove_dir_all(&home);
-    }
-
-    #[test]
-    fn signer_from_signature_bytes_extracts_issuer() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
-            "../vendor/sequoia-openpgp/tests/data/pqc/ietf/v6-slhdsa-256s-sample-signature.pgp",
-        );
-        let bytes = std::fs::read(&path).expect("read signature bytes");
-        let signer = signer_from_signature_bytes(&bytes);
-        assert!(signer.is_some(), "expected issuer fingerprint in signature");
     }
 
     #[test]
@@ -1984,7 +2127,10 @@ mod tests {
         // Serialize as a public cert and import it (simulates "public update imported later").
         let revoked_public_bytes = revoked_secret.to_vec().expect("serialize public");
         backend
-            .import_key(&revoked_public_bytes)
+            .import_key(ImportRequest {
+                bytes: revoked_public_bytes,
+                allow_unprotected: false,
+            })
             .expect("import public update");
 
         // Prove persistence by removing the public copy, then ensuring the secret file itself

@@ -93,6 +93,7 @@ fn native_encrypt_output_is_pqc_only_and_decrypts() {
         .decrypt(qpgp_core::DecryptRequest {
             ciphertext,
             pqc_policy: PqcPolicy::Required,
+            allow_revoked_keys: false,
         })
         .expect("decrypt");
     assert_eq!(decrypted, plaintext);

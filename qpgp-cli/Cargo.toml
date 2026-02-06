@@ -13,3 +13,7 @@ anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 qpgp-core = { path = "../qpgp-core" }
 qpgp-pgp = { path = "../qpgp-pgp" }
+tempfile = "3"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

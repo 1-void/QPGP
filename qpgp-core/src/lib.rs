@@ -55,6 +55,8 @@ pub struct EncryptRequest {
 pub struct DecryptRequest {
     pub ciphertext: Vec<u8>,
     pub pqc_policy: PqcPolicy,
+    /// Allow decryption using revoked keys (useful for archival recovery).
+    pub allow_revoked_keys: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -75,9 +77,18 @@ pub struct VerifyRequest {
 }
 
 #[derive(Debug, Clone)]
+pub struct ImportRequest {
+    pub bytes: Vec<u8>,
+    pub allow_unprotected: bool,
+}
+
+#[derive(Debug, Clone)]
 pub struct VerifyResult {
     pub valid: bool,
+    /// The signer if exactly one good signature was found.
     pub signer: Option<KeyId>,
+    /// All unique signers for signatures that were verified as good.
+    pub signers: Vec<KeyId>,
     pub message: Option<Vec<u8>>,
 }
 
@@ -153,7 +164,7 @@ pub trait Backend {
 
     fn list_keys(&self) -> Result<Vec<KeyMeta>, QpgpError>;
     fn generate_key(&self, params: KeyGenParams) -> Result<KeyMeta, QpgpError>;
-    fn import_key(&self, bytes: &[u8]) -> Result<KeyMeta, QpgpError>;
+    fn import_key(&self, req: ImportRequest) -> Result<KeyMeta, QpgpError>;
     fn export_key(&self, id: &KeyId, secret: bool, armor: bool) -> Result<Vec<u8>, QpgpError>;
 
     fn encrypt(&self, req: EncryptRequest) -> Result<Vec<u8>, QpgpError>;

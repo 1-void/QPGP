@@ -25,6 +25,11 @@ jobs:
       run: rustup component add rustfmt clippy
     - name: Bootstrap PQC OpenSSL
       run: ./scripts/bootstrap-pqc.sh
+    - name: Sanity-check PQC availability
+      run: |
+        set -euo pipefail
+        source scripts/pqc-env.sh
+        cargo run -q -p qpgp-cli -- info | rg -q "pqc supported: true"
     - name: Build, fmt, clippy, and test (PQC)
       run: |
         set -euo pipefail
@@ -72,6 +77,11 @@ jobs:
       run: rustup component add rustfmt clippy
     - name: Bootstrap PQC OpenSSL (+ OQS provider)
       run: ./scripts/bootstrap-pqc.sh
+    - name: Sanity-check PQC availability (OQS)
+      run: |
+        set -euo pipefail
+        source scripts/pqc-env.sh
+        cargo run -q -p qpgp-cli -- info | rg -q "pqc supported: true"
     - name: Build and test (PQC + OQS provider)
       run: |
         set -euo pipefail

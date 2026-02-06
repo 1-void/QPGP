@@ -1,6 +1,6 @@
 use qpgp_core::{
-    Backend, DecryptRequest, EncryptRequest, KeyGenParams, KeyId, PqcLevel, PqcPolicy, SignRequest,
-    UserId, VerifyRequest,
+    Backend, DecryptRequest, EncryptRequest, ImportRequest, KeyGenParams, KeyId, PqcLevel,
+    PqcPolicy, SignRequest, UserId, VerifyRequest,
 };
 mod common;
 
@@ -168,7 +168,12 @@ fn relative_home_allowed_with_override() {
 fn import_empty_bytes_rejected() {
     let _home = set_temp_home();
     let backend = NativeBackend::new(PqcPolicy::Required);
-    let err = backend.import_key(&[]).expect_err("expected import error");
+    let err = backend
+        .import_key(ImportRequest {
+            bytes: Vec::new(),
+            allow_unprotected: false,
+        })
+        .expect_err("expected import error");
     assert!(
         err.to_string().contains("no certificates found"),
         "unexpected error: {err}"
@@ -223,7 +228,12 @@ fn export_secret_requires_secret_key() {
     if !require_pqc(backend.supports_pqc()) {
         return;
     }
-    backend.import_key(&public).expect("import public");
+    backend
+        .import_key(ImportRequest {
+            bytes: public,
+            allow_unprotected: false,
+        })
+        .expect("import public");
     let err = backend
         .export_key(&key_id, true, false)
         .expect_err("expected secret missing");
@@ -317,8 +327,18 @@ fn pqc_roundtrip_import_export() {
     if !require_pqc(backend2.supports_pqc()) {
         return;
     }
-    backend2.import_key(&secret).expect("import secret");
-    backend2.import_key(&public).expect("import public");
+    backend2
+        .import_key(ImportRequest {
+            bytes: secret,
+            allow_unprotected: true,
+        })
+        .expect("import secret");
+    backend2
+        .import_key(ImportRequest {
+            bytes: public,
+            allow_unprotected: false,
+        })
+        .expect("import public");
 
     let msg = b"roundtrip message";
     let sig = backend2
@@ -357,6 +377,7 @@ fn pqc_roundtrip_import_export() {
         .decrypt(DecryptRequest {
             ciphertext: enc,
             pqc_policy: PqcPolicy::Required,
+            allow_revoked_keys: false,
         })
         .expect("decrypt");
     assert_eq!(dec, msg);
@@ -557,7 +578,10 @@ fn non_pqc_import_rejected() {
     let backend = NativeBackend::new(PqcPolicy::Required);
 
     let classic = generate_classic_cert_bytes("Classic Import <classic-import@example.com>");
-    let result = backend.import_key(&classic);
+    let result = backend.import_key(ImportRequest {
+        bytes: classic,
+        allow_unprotected: false,
+    });
     assert!(result.is_err(), "expected non-PQC import to fail");
 }
 
@@ -676,6 +700,7 @@ fn armored_encrypt_decrypt_roundtrip() {
         .decrypt(DecryptRequest {
             ciphertext,
             pqc_policy: PqcPolicy::Required,
+            allow_revoked_keys: false,
         })
         .expect("decrypt");
     assert_eq!(plaintext, msg);
@@ -808,6 +833,7 @@ fn decrypt_requires_passphrase_for_encrypted_secret() {
         .decrypt(DecryptRequest {
             ciphertext,
             pqc_policy: PqcPolicy::Required,
+            allow_revoked_keys: false,
         })
         .expect_err("expected passphrase error");
     assert!(
@@ -864,7 +890,10 @@ fn pqc_import_rejects_corrupt_cert() {
         corrupted[idx] ^= 0xFF;
     }
 
-    let result = backend.import_key(&corrupted);
+    let result = backend.import_key(ImportRequest {
+        bytes: corrupted,
+        allow_unprotected: false,
+    });
     assert!(result.is_err(), "expected corrupt cert to be rejected");
 }
 
@@ -905,6 +934,7 @@ fn decrypt_rejects_tampered_ciphertext() {
     let result = backend.decrypt(DecryptRequest {
         ciphertext: tampered,
         pqc_policy: PqcPolicy::Required,
+        allow_revoked_keys: false,
     });
     assert!(result.is_err(), "expected tampered ciphertext to fail");
 }
@@ -952,7 +982,12 @@ fn decrypt_rejects_wrong_key() {
         })
         .expect("keygen B");
 
-    backend_b.import_key(&public_a).expect("import A public");
+    backend_b
+        .import_key(ImportRequest {
+            bytes: public_a,
+            allow_unprotected: false,
+        })
+        .expect("import A public");
 
     let ciphertext = backend_b
         .encrypt(EncryptRequest {
@@ -967,6 +1002,7 @@ fn decrypt_rejects_wrong_key() {
     let result = backend_b.decrypt(DecryptRequest {
         ciphertext,
         pqc_policy: PqcPolicy::Required,
+        allow_revoked_keys: false,
     });
     assert!(result.is_err(), "expected wrong key decrypt to fail");
 }
@@ -1016,6 +1052,85 @@ fn verify_rejects_modified_message() {
 }
 
 #[test]
+fn verify_is_not_jammed_by_extra_valid_signature() {
+    // If multiple good detached signatures are present (OpenPGP allows this),
+    // verification should still succeed. The caller/CLI can then enforce an
+    // expected signer fingerprint without being vulnerable to "bypass-by-DoS".
+    let _home = set_temp_home();
+    let backend = NativeBackend::new(PqcPolicy::Required);
+    if !require_pqc(backend.supports_pqc()) {
+        return;
+    }
+
+    let a = backend
+        .generate_key(KeyGenParams {
+            user_id: UserId("SignerA <a@example.com>".to_string()),
+            algo: None,
+            pqc_policy: PqcPolicy::Required,
+            pqc_level: PqcLevel::Baseline,
+            passphrase: None,
+            allow_unprotected: true,
+        })
+        .expect("keygen A");
+    let b = backend
+        .generate_key(KeyGenParams {
+            user_id: UserId("SignerB <b@example.com>".to_string()),
+            algo: None,
+            pqc_policy: PqcPolicy::Required,
+            pqc_level: PqcLevel::Baseline,
+            passphrase: None,
+            allow_unprotected: true,
+        })
+        .expect("keygen B");
+
+    let msg = b"detached signature jamming test";
+    let sig_a = backend
+        .sign(SignRequest {
+            signer: a.key_id.clone(),
+            message: msg.to_vec(),
+            armor: false,
+            cleartext: false,
+            pqc_policy: PqcPolicy::Required,
+        })
+        .expect("sign A");
+    let sig_b = backend
+        .sign(SignRequest {
+            signer: b.key_id.clone(),
+            message: msg.to_vec(),
+            armor: false,
+            cleartext: false,
+            pqc_policy: PqcPolicy::Required,
+        })
+        .expect("sign B");
+
+    // Attacker appends their own valid signature packet(s).
+    let mut combined = sig_a.clone();
+    combined.extend_from_slice(&sig_b);
+
+    let result = backend
+        .verify(VerifyRequest {
+            message: msg.to_vec(),
+            signature: combined,
+            cleartext: false,
+            pqc_policy: PqcPolicy::Required,
+        })
+        .expect("verify");
+    assert!(result.valid, "expected verification to succeed");
+    assert!(
+        result.signers.iter().any(|s| s.0 == a.key_id.0),
+        "expected legitimate signer to be present"
+    );
+    assert!(
+        result.signers.iter().any(|s| s.0 == b.key_id.0),
+        "expected extra signer to be present"
+    );
+    assert!(
+        result.signer.is_none(),
+        "expected signer=None when multiple good signers exist"
+    );
+}
+
+#[test]
 fn export_armor_contains_header() {
     let _home = set_temp_home();
     let backend = NativeBackend::new(PqcPolicy::Required);
@@ -1055,6 +1170,7 @@ fn decrypt_rejects_invalid_ciphertext() {
         .decrypt(DecryptRequest {
             ciphertext: b"not an openpgp message".to_vec(),
             pqc_policy: PqcPolicy::Required,
+            allow_revoked_keys: false,
         })
         .expect_err("expected parse error");
     assert!(

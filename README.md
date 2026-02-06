@@ -78,7 +78,18 @@ cargo run -p qpgp-cli -- export <KEY_ID> --armor -o key.asc
 Note: sensitive operations require a full fingerprint (40 or 64 hex characters). Verification requires `--signer` to pin the expected signer. Use `list-keys` to find the exact fingerprint.
 
 Passphrase note: prefer `--passphrase-file` to avoid exposing secrets in process listings.
+On Unix, QPGP enforces strict passphrase-file permissions: the file must be owned by you and not be group/world-readable.
 Large files: inputs are limited to 64 MiB by default. Override with `QPGP_MAX_INPUT_BYTES`.
+
+Revoked keys: by default, revoked keys are not used for decryption. For archival recovery you can opt in:
+```bash
+cargo run -p qpgp-cli -- decrypt --allow-revoked-keys -o message.txt msg.pgp
+```
+
+Importing secret keys: if you have a passphrase configured, imported secret keys must be passphrase-protected (or they will be re-encrypted). To explicitly allow storing plaintext secret key material on disk (not recommended):
+```bash
+cargo run -p qpgp-cli -- import --allow-unprotected-import secret.pgp
+```
 
 Key lifecycle:
 ```bash
@@ -90,6 +101,8 @@ Diagnostics:
 ```bash
 cargo run -p qpgp-cli -- doctor
 ```
+
+Non-interactive hardening note: `--allow-insecure-home` is refused in non-interactive mode unless `QPGP_ALLOW_INSECURE_HOME_NONINTERACTIVE=1` is set.
 
 If you need oqs-provider explicitly:
 ```bash

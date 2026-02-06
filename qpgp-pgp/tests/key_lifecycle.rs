@@ -1,6 +1,6 @@
 use qpgp_core::{
-    Backend, KeyGenParams, PqcLevel, PqcPolicy, RevocationReason, RevokeRequest, RotateRequest,
-    UserId,
+    Backend, DecryptRequest, EncryptRequest, KeyGenParams, PqcLevel, PqcPolicy, RevocationReason,
+    RevokeRequest, RotateRequest, UserId,
 };
 mod common;
 
@@ -95,6 +95,68 @@ fn rotate_creates_new_key_and_revokes_old() {
         .export_key(&meta.key_id, false, false)
         .expect("export old cert");
     assert_revoked(&old_public);
+}
+
+#[test]
+fn decrypt_with_revoked_keys_requires_explicit_opt_in() {
+    let _home = set_temp_home();
+    let backend = NativeBackend::new(PqcPolicy::Required);
+    if !require_pqc(backend.supports_pqc()) {
+        return;
+    }
+
+    let meta = backend
+        .generate_key(KeyGenParams {
+            user_id: UserId("Revoked Decrypt <revdec@example.com>".to_string()),
+            algo: None,
+            pqc_policy: PqcPolicy::Required,
+            pqc_level: PqcLevel::Baseline,
+            passphrase: None,
+            allow_unprotected: true,
+        })
+        .expect("keygen");
+
+    let plaintext = b"archive message".to_vec();
+    let ciphertext = backend
+        .encrypt(EncryptRequest {
+            recipients: vec![meta.key_id.clone()],
+            plaintext: plaintext.clone(),
+            armor: false,
+            pqc_policy: PqcPolicy::Required,
+            compat: false,
+        })
+        .expect("encrypt");
+
+    // Revoke the key (common rotation/incident response workflow).
+    backend
+        .revoke_key(RevokeRequest {
+            key_id: meta.key_id.clone(),
+            reason: RevocationReason::KeySuperseded,
+            message: Some("test revoke".to_string()),
+            armor: false,
+        })
+        .expect("revoke");
+
+    // Default behavior: refuse to use revoked keys for decryption.
+    let default_attempt = backend.decrypt(DecryptRequest {
+        ciphertext: ciphertext.clone(),
+        pqc_policy: PqcPolicy::Required,
+        allow_revoked_keys: false,
+    });
+    assert!(
+        default_attempt.is_err(),
+        "expected decryption with revoked keys to fail by default"
+    );
+
+    // Opt-in behavior: allow archival recovery.
+    let recovered = backend
+        .decrypt(DecryptRequest {
+            ciphertext,
+            pqc_policy: PqcPolicy::Required,
+            allow_revoked_keys: true,
+        })
+        .expect("decrypt with revoked keys");
+    assert_eq!(recovered, plaintext);
 }
 
 #[test]

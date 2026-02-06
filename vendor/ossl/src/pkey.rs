@@ -975,14 +975,17 @@ unsafe extern "C" fn export_params_callback(
      * on knowing how OpenSSL internally builds parameter slices, and if
      * that ever changes we may be overwrting memory that was not a
      * temporary copy */
-    let max_ptr = pslice.as_ptr().wrapping_add(total_size) as *const c_void;
-    let base_ptr = pslice.as_ptr() as *const c_void;
+    // `total_size` is a byte count. Avoid pointer arithmetic in units of
+    // `OSSL_PARAM`, which would massively overshoot and make the range check
+    // meaningless (and potentially dangerous).
+    let base_addr = pslice.as_ptr() as usize;
+    let max_addr = base_addr.saturating_add(total_size);
     for p in pslice {
         if p.data.is_null() {
             continue;
         }
-        let pdata = p.data as *const c_void;
-        if pdata > base_ptr && pdata < max_ptr {
+        let pdata = p.data as usize;
+        if pdata >= base_addr && pdata < max_addr {
             unsafe {
                 OPENSSL_cleanse(p.data, p.data_size);
             }

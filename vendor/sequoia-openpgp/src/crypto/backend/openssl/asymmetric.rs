@@ -75,17 +75,17 @@ macro_rules! slhdsa {
                     ref prikey,
                     ..
                 }) => {
-                    let pubkey = pubkey.as_ref().expect("to be set");
-                    let prikey = prikey.as_ref().expect("to be set");
+                    let pubkey = pubkey.as_ref().ok_or_else(not_set)?;
+                    let prikey = prikey.as_ref().ok_or_else(not_set)?;
 
-                    assert_eq!(pubkey.len(), 2 * $n);
-                    assert_eq!(prikey.len(), 4 * $n);
+                    require_len(pubkey.len(), 2 * $n, "SLH-DSA public key")?;
+                    require_len(prikey.len(), 4 * $n, "SLH-DSA private key")?;
 
                     let mut public = [0; 2 * $n];
-                    public.copy_from_slice(&pubkey);
+                    public.copy_from_slice(pubkey);
 
                     // From
-                    // https://www.ietf.org/archive/id/draft-ietf-openpgp-pqc-13.html#name-key-material-packets-3
+                    // https://www.ietf.org/archive/id/draft-ietf-openpgp-pqc-17.html#name-key-material-packets-3
                     //
                     //   The algorithm-specific part of the secret key
                     //   consists of:
