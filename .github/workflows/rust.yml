@@ -8,6 +8,11 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # Supply-chain hardening: pin OpenSSL to an exact commit and require it.
+  # Keep in sync with scripts/bootstrap-pqc.sh defaults / updates.
+  PQC_VERIFY: "1"
+  OPENSSL_TAG: "openssl-3.5.5"
+  OPENSSL_COMMIT: "67b5686b4419b4cb8caa502711c41815f5279751"
 
 jobs:
   build:
