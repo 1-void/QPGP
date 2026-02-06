@@ -184,6 +184,14 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     let pqc_policy = PqcPolicy::Required;
 
+    if cli.allow_insecure_home {
+        if let Ok(home) = std::env::var("QPGP_HOME")
+            && !std::path::Path::new(&home).is_absolute()
+        {
+            eprintln!("warning: QPGP_HOME is relative and --allow-insecure-home was used; this is insecure and should only be used for testing");
+        }
+    }
+
     if cli.passphrase.is_some() && !cli.allow_unsafe_passphrase {
         return Err(anyhow!(
             "--passphrase is unsafe (leaks via shell history / process listings); use --passphrase-file, or pass --allow-unsafe-passphrase to proceed"
@@ -240,10 +248,15 @@ fn main() -> Result<()> {
                 }
                 let baseline = pqc_suite_supported(PqcLevel::Baseline);
                 let high = pqc_suite_supported(PqcLevel::High);
-                if !baseline || !high {
+                if !baseline {
                     return Err(anyhow!(
-                        "PQC suites missing: baseline={baseline}, high={high}. Run scripts/bootstrap-pqc.sh"
+                        "PQC baseline suite missing: baseline={baseline}, high={high}. Run scripts/bootstrap-pqc.sh"
                     ));
+                }
+                if !high {
+                    eprintln!(
+                        "warning: PQC high suite unavailable (baseline={baseline}, high={high}); High will fall back to Baseline"
+                    );
                 }
 
                 // Best-effort build manifest to help debugging provider-loading issues.

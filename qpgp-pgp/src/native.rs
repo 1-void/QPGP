@@ -143,6 +143,47 @@ impl NativeBackend {
         Ok(())
     }
 
+    fn ensure_dir_not_symlink(&self, path: &Path, what: &str) -> Result<(), QpgpError> {
+        let meta = fs::symlink_metadata(path)
+            .map_err(|err| QpgpError::Io(format!("stat failed: {err}")))?;
+        if meta.file_type().is_symlink() {
+            return Err(QpgpError::InvalidInput(format!(
+                "{what} must not be a symlink: {}",
+                path.display()
+            )));
+        }
+        if !meta.is_dir() {
+            return Err(QpgpError::InvalidInput(format!(
+                "{what} is not a directory: {}",
+                path.display()
+            )));
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    fn chmod_private_dir(&self, path: &Path, what: &str) -> Result<(), QpgpError> {
+        use std::fs::OpenOptions;
+        use std::os::unix::fs::OpenOptionsExt;
+        use std::os::unix::io::AsRawFd;
+
+        // Use O_NOFOLLOW so an attacker cannot trick us into chmod'ing an arbitrary target via
+        // a symlink race when QPGP_HOME is placed in an attacker-controlled directory.
+        let dir = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+            .open(path)
+            .map_err(|err| QpgpError::Io(format!("open {what} failed: {err}")))?;
+        let rc = unsafe { libc::fchmod(dir.as_raw_fd(), 0o700) };
+        if rc != 0 {
+            return Err(QpgpError::Io(format!(
+                "chmod {what} failed: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
+        Ok(())
+    }
+
     fn ensure_home_secure_if_exists(&self) -> Result<(), QpgpError> {
         self.ensure_absolute_home()?;
         if !self.home.exists() {
@@ -170,19 +211,19 @@ impl NativeBackend {
         self.ensure_home_secure_if_exists()?;
         fs::create_dir_all(&self.home)
             .map_err(|err| QpgpError::Io(format!("create dir failed: {err}")))?;
+        // Ensure we never create children under a symlinked home directory.
+        self.ensure_dir_not_symlink(&self.home, "QPGP_HOME")?;
         fs::create_dir_all(self.public_dir())
             .map_err(|err| QpgpError::Io(format!("create dir failed: {err}")))?;
+        self.ensure_dir_not_symlink(&self.public_dir(), "QPGP public dir")?;
         fs::create_dir_all(self.secret_dir())
             .map_err(|err| QpgpError::Io(format!("create dir failed: {err}")))?;
+        self.ensure_dir_not_symlink(&self.secret_dir(), "QPGP secret dir")?;
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&self.home, fs::Permissions::from_mode(0o700))
-                .map_err(|err| QpgpError::Io(format!("chmod failed: {err}")))?;
-            fs::set_permissions(self.public_dir().as_path(), fs::Permissions::from_mode(0o700))
-                .map_err(|err| QpgpError::Io(format!("chmod failed: {err}")))?;
-            fs::set_permissions(self.secret_dir().as_path(), fs::Permissions::from_mode(0o700))
-                .map_err(|err| QpgpError::Io(format!("chmod failed: {err}")))?;
+            self.chmod_private_dir(&self.home, "QPGP_HOME")?;
+            self.chmod_private_dir(&self.public_dir(), "QPGP public dir")?;
+            self.chmod_private_dir(&self.secret_dir(), "QPGP secret dir")?;
 
             // Re-check, and reject if anything is still insecure (ownership, symlinks, etc).
             self.ensure_secure_dir(&self.home, "QPGP_HOME", true)?;
