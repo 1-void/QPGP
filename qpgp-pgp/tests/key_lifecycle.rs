@@ -96,3 +96,73 @@ fn rotate_creates_new_key_and_revokes_old() {
         .expect("export old cert");
     assert_revoked(&old_public);
 }
+
+#[test]
+fn load_all_certs_merges_public_updates_into_secret_store() {
+    use std::path::PathBuf;
+
+    use openpgp::parse::Parse;
+    use openpgp::types::ReasonForRevocation;
+    use sequoia_openpgp as openpgp;
+    use sequoia_openpgp::serialize::SerializeInto;
+
+    let _home = set_temp_home();
+    let backend = NativeBackend::new(PqcPolicy::Required);
+    if !require_pqc(backend.supports_pqc()) {
+        return;
+    }
+
+    let meta = backend
+        .generate_key(KeyGenParams {
+            user_id: UserId("Merge Test <merge@example.com>".to_string()),
+            algo: None,
+            pqc_policy: PqcPolicy::Required,
+            pqc_level: PqcLevel::Baseline,
+            passphrase: None,
+            allow_unprotected: true,
+        })
+        .expect("keygen");
+
+    // Keep a stale secret copy on disk, but update only the public copy to include a revocation.
+    let tsk_bytes = backend
+        .export_key(&meta.key_id, true, false)
+        .expect("export secret");
+    let cert = openpgp::Cert::from_bytes(&tsk_bytes).expect("parse secret cert");
+
+    let key = cert
+        .primary_key()
+        .key()
+        .clone()
+        .parts_into_secret()
+        .expect("secret key load");
+    let mut keypair = key.into_keypair().expect("keypair");
+    let rev = cert
+        .revoke(
+            &mut keypair,
+            ReasonForRevocation::KeyCompromised,
+            b"test revocation",
+        )
+        .expect("make revocation");
+    let (revoked_cert, _) = cert
+        .clone()
+        .insert_packets(rev)
+        .expect("insert revocation");
+    let revoked_public = revoked_cert.to_vec().expect("serialize revoked cert");
+
+    let home = PathBuf::from(std::env::var("QPGP_HOME").expect("QPGP_HOME"));
+    let public_path = home
+        .join("public")
+        .join(format!("{}.pgp", meta.key_id.0));
+    let secret_path = home
+        .join("secret")
+        .join(format!("{}.pgp", meta.key_id.0));
+
+    std::fs::write(&public_path, revoked_public).expect("write public update");
+    std::fs::write(&secret_path, tsk_bytes).expect("ensure secret stays stale");
+
+    // load_all_certs() should merge the public revocation into the secret cert.
+    let exported = backend
+        .export_key(&meta.key_id, false, false)
+        .expect("export merged cert");
+    assert_revoked(&exported);
+}

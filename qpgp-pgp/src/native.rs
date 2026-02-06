@@ -11,7 +11,7 @@ use openpgp::policy::StandardPolicy;
 use openpgp::serialize::stream::{Armorer, Encryptor, LiteralWriter, Message, Signer};
 use openpgp::serialize::{Serialize, SerializeInto};
 use openpgp::types::ReasonForRevocation;
-use openpgp::types::{AEADAlgorithm, PublicKeyAlgorithm, SymmetricAlgorithm};
+use openpgp::types::{AEADAlgorithm, HashAlgorithm, PublicKeyAlgorithm, SymmetricAlgorithm};
 use openpgp::{Cert, KeyHandle, KeyID, Packet, PacketPile, Profile};
 use qpgp_core::{
     Backend, DecryptRequest, EncryptRequest, KeyGenParams, KeyId, KeyMeta, PqcLevel, PqcPolicy,
@@ -97,11 +97,22 @@ impl NativeBackend {
     fn load_all_certs(&self) -> Result<Vec<Cert>, QpgpError> {
         self.ensure_absolute_home()?;
         let mut certs: HashMap<String, Cert> = HashMap::new();
-        for cert in self.load_certs_from_dir(&self.public_dir())? {
-            certs.insert(cert.fingerprint().to_hex(), cert);
-        }
         for cert in self.load_certs_from_dir(&self.secret_dir())? {
             certs.insert(cert.fingerprint().to_hex(), cert);
+        }
+        for cert in self.load_certs_from_dir(&self.public_dir())? {
+            let fpr = cert.fingerprint().to_hex();
+            match certs.remove(&fpr) {
+                Some(existing) => {
+                    let merged = existing
+                        .merge_public(cert)
+                        .map_err(|err| QpgpError::Backend(format!("cert merge failed: {err}")))?;
+                    certs.insert(fpr, merged);
+                }
+                None => {
+                    certs.insert(fpr, cert);
+                }
+            }
         }
         Ok(certs.into_values().collect())
     }
@@ -784,9 +795,6 @@ impl Backend for NativeBackend {
         let p = &StandardPolicy::new();
         if req.cleartext {
             let sig_block = cleartext_signature_block(&req.signature)?;
-            if require_pqc {
-                ensure_pqc_signature_output(&sig_block).map_err(policy_error)?;
-            }
             let mut verifier = openpgp::parse::stream::VerifierBuilder::from_bytes(&req.signature)
                 .map_err(|err| QpgpError::Backend(format!("parse failed: {err}")))?
                 .with_policy(p, None, helper)
@@ -795,6 +803,9 @@ impl Backend for NativeBackend {
             let read_ok = verifier.read_to_end(&mut content).is_ok();
             let helper = verifier.into_helper();
             let valid = read_ok && helper.valid_signature();
+            if require_pqc && valid {
+                helper.enforce_pqc_verified_signatures()?;
+            }
             let signer = if valid {
                 helper
                     .signer()
@@ -809,9 +820,6 @@ impl Backend for NativeBackend {
             });
         }
 
-        if require_pqc {
-            ensure_pqc_signature_output(&req.signature).map_err(policy_error)?;
-        }
         let mut verifier = DetachedVerifierBuilder::from_bytes(&req.signature)
             .map_err(|err| QpgpError::Backend(format!("parse failed: {err}")))?
             .with_policy(p, None, helper)
@@ -820,6 +828,9 @@ impl Backend for NativeBackend {
         let read_ok = verifier.verify_bytes(&req.message).is_ok();
         let helper = verifier.into_helper();
         let valid = read_ok && helper.valid_signature();
+        if require_pqc && valid {
+            helper.enforce_pqc_verified_signatures()?;
+        }
         let signer = if valid {
             helper
                 .signer()
@@ -930,6 +941,8 @@ struct NativeHelper {
     multiple_signers: bool,
     saw_signature: bool,
     has_valid_signature: bool,
+    // Metadata for signatures that were actually verified as good by Sequoia.
+    good_signatures: Vec<(PublicKeyAlgorithm, HashAlgorithm, u8)>,
 }
 
 impl NativeHelper {
@@ -941,6 +954,7 @@ impl NativeHelper {
             multiple_signers: false,
             saw_signature: false,
             has_valid_signature: false,
+            good_signatures: Vec::new(),
         }
     }
 
@@ -954,6 +968,44 @@ impl NativeHelper {
 
     fn valid_signature(&self) -> bool {
         self.saw_signature && self.has_valid_signature
+    }
+
+    fn enforce_pqc_verified_signatures(&self) -> Result<(), QpgpError> {
+        // Enforce PQC policy based on the signature packets that were actually validated,
+        // not by substring-extracting some armor that might not correspond to what was verified.
+        let good = &self.good_signatures;
+        if good.is_empty() {
+            return Err(QpgpError::Backend(
+                "policy violation: no valid signatures found".to_string(),
+            ));
+        }
+        if good.len() > 1 {
+            return Err(QpgpError::Backend(format!(
+                "policy violation: multiple signatures found ({}); expected exactly one",
+                good.len()
+            )));
+        }
+
+        let (pk_algo, hash_algo, sig_version) = good[0];
+        if !is_pqc_sign_algo(pk_algo) {
+            return Err(QpgpError::Backend(format!(
+                "policy violation: non-PQC signature found: {:?}",
+                pk_algo
+            )));
+        }
+        if sig_version < 6 {
+            return Err(QpgpError::Backend(format!(
+                "policy violation: signature version is v{}",
+                sig_version
+            )));
+        }
+        if !hash_is_pqc_ok(hash_algo) {
+            return Err(QpgpError::Backend(format!(
+                "policy violation: weak hash used: {:?}",
+                hash_algo
+            )));
+        }
+        Ok(())
     }
 }
 
@@ -989,6 +1041,11 @@ impl VerificationHelper for NativeHelper {
                     self.saw_signature = true;
                     if let Ok(good) = result {
                         self.has_valid_signature = true;
+                        self.good_signatures.push((
+                            good.sig.pk_algo(),
+                            good.sig.hash_algo(),
+                            good.sig.version(),
+                        ));
                         let fpr = good.ka.cert().fingerprint().to_hex();
                         match &self.signer {
                             None => self.signer = Some(KeyId(fpr)),
@@ -1245,18 +1302,38 @@ fn cert_matches(cert: &Cert, needle_hex: &str, needle_raw: &str) -> bool {
 fn cleartext_signature_block(bytes: &[u8]) -> Result<Vec<u8>, QpgpError> {
     const BEGIN: &str = "-----BEGIN PGP SIGNATURE-----";
     const END: &str = "-----END PGP SIGNATURE-----";
+    // The cleartext body can legally contain dash-escaped lines that include
+    // the substring "-----BEGIN PGP SIGNATURE-----". Avoid naive substring
+    // extraction: anchor to full lines and pick the last armor delimiter.
     let text = String::from_utf8_lossy(bytes);
-    let start = text.find(BEGIN).ok_or_else(|| {
-        QpgpError::InvalidInput("cleartext signature block not found".to_string())
-    })?;
-    let end_rel = text[start..].find(END).ok_or_else(|| {
-        QpgpError::InvalidInput("cleartext signature block not found".to_string())
-    })?;
-    let mut end = start + end_rel + END.len();
-    if let Some(rest) = text[end..].find('\n') {
-        end += rest + 1;
+
+    let mut begin_offsets = Vec::new();
+    let mut offset = 0usize;
+    for line in text.split_inclusive('\n') {
+        let trimmed = line.trim_end_matches(['\n', '\r']);
+        if trimmed == BEGIN {
+            begin_offsets.push(offset);
+        }
+        offset += line.len();
     }
-    Ok(text[start..end].as_bytes().to_vec())
+    let start = begin_offsets.pop().ok_or_else(|| {
+        QpgpError::InvalidInput("cleartext signature block not found".to_string())
+    })?;
+
+    // Find the END delimiter line after start.
+    let tail = &text[start..];
+    let mut rel = 0usize;
+    for line in tail.split_inclusive('\n') {
+        let trimmed = line.trim_end_matches(['\n', '\r']);
+        rel += line.len();
+        if trimmed == END {
+            return Ok(text[start..start + rel].as_bytes().to_vec());
+        }
+    }
+
+    Err(QpgpError::InvalidInput(
+        "cleartext signature block not found".to_string(),
+    ))
 }
 
 #[cfg(test)]

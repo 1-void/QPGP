@@ -440,6 +440,51 @@ fn cleartext_sign_verify_roundtrip() {
 }
 
 #[test]
+fn cleartext_sign_verify_allows_signature_delimiter_in_body() {
+    let _home = set_temp_home();
+    let backend = NativeBackend::new(PqcPolicy::Required);
+    if !require_pqc(backend.supports_pqc()) {
+        return;
+    }
+
+    let meta = backend
+        .generate_key(KeyGenParams {
+            user_id: UserId("Cleartext Delim <delim@example.com>".to_string()),
+            algo: None,
+            pqc_policy: PqcPolicy::Required,
+            pqc_level: PqcLevel::Baseline,
+            passphrase: None,
+            allow_unprotected: true,
+        })
+        .expect("keygen");
+
+    // This line begins with '-', so cleartext signing will dash-escape it in the body (RFC 4880/9580).
+    // Previously, our naive substring search would treat that escaped line as the start of the
+    // signature armor block, causing a policy failure (DoS).
+    let msg = b"hello\n-----BEGIN PGP SIGNATURE-----\nworld";
+    let signed = backend
+        .sign(SignRequest {
+            signer: meta.key_id,
+            message: msg.to_vec(),
+            armor: false,
+            cleartext: true,
+            pqc_policy: PqcPolicy::Required,
+        })
+        .expect("clearsign");
+
+    let result = backend
+        .verify(VerifyRequest {
+            message: Vec::new(),
+            signature: signed,
+            cleartext: true,
+            pqc_policy: PqcPolicy::Required,
+        })
+        .expect("verify");
+
+    assert!(result.valid, "cleartext signature invalid");
+}
+
+#[test]
 fn cleartext_verify_requires_signature_block() {
     let _home = set_temp_home();
     let backend = NativeBackend::new(PqcPolicy::Required);
