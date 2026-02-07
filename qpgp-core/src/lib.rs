@@ -1,5 +1,33 @@
 use std::fmt;
 
+/// Sanitizes untrusted text for display in a terminal.
+///
+/// OpenPGP User IDs are attacker-controlled and may contain control
+/// characters or ANSI escape sequences. This function ensures terminal output
+/// cannot be manipulated by stripping/escaping control bytes.
+pub fn sanitize_for_terminal(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for ch in input.chars() {
+        match ch {
+            '\n' | '\r' | '\t' => out.push(' '),
+            c if c.is_control() => {
+                // ASCII-only escape to make the presence of a control char obvious.
+                let code = c as u32;
+                if code <= 0xFF {
+                    out.push_str("\\x");
+                    out.push_str(&format!("{:02X}", code));
+                } else {
+                    out.push_str("\\u{");
+                    out.push_str(&format!("{:X}", code));
+                    out.push('}');
+                }
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum PqcPolicy {
     Disabled,

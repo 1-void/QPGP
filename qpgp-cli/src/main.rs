@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use qpgp_core::{
     Backend, DecryptRequest, EncryptRequest, ImportRequest, KeyGenParams, KeyId, OPENPGP_PQC_DRAFT,
     PqcLevel, PqcPolicy, RevocationReason, RevokeRequest, RotateRequest, SignRequest, UserId,
-    VerifyRequest, VerifyResult,
+    VerifyRequest, VerifyResult, sanitize_for_terminal,
 };
 use qpgp_pgp::{NativeBackend, pqc_algorithms_supported, pqc_suite_supported};
 use std::fs;
@@ -343,6 +343,7 @@ fn main() -> Result<()> {
                     .as_ref()
                     .map(|u| u.0.as_str())
                     .unwrap_or("(no user id)");
+                let user = sanitize_for_terminal(user);
                 let created = key.created_utc.as_deref().unwrap_or("(unknown)");
                 let kind = if key.has_secret { "sec" } else { "pub" };
                 println!(
@@ -378,7 +379,7 @@ fn main() -> Result<()> {
             path,
             allow_unprotected_import,
         } => {
-            let bytes = fs::read(path)?;
+            let bytes = read_import_file(&path)?;
             if allow_unprotected_import {
                 eprintln!("warning: --allow-unprotected-import enabled; this may store plaintext secret key material on disk");
             }
@@ -591,9 +592,28 @@ fn read_passphrase_file(path: &str) -> Result<String> {
     const MAX_PASSPHRASE_FILE_BYTES: u64 = 16 * 1024;
 
     // Avoid symlink surprises and enforce basic operational hygiene.
-    let meta = fs::symlink_metadata(path)?;
-    if meta.file_type().is_symlink() {
+    // Do an explicit symlink check for a stable error message, then rely on
+    // O_NOFOLLOW + fstat checks to avoid TOCTOU races.
+    let link_meta = fs::symlink_metadata(path)?;
+    if link_meta.file_type().is_symlink() {
         return Err(anyhow!("passphrase file must not be a symlink"));
+    }
+
+    // Use O_NOFOLLOW + fstat-based checks to avoid TOCTOU races.
+    #[cfg(unix)]
+    let file = {
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut opts = std::fs::OpenOptions::new();
+        opts.read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+        opts.open(path)?
+    };
+    #[cfg(not(unix))]
+    let file = std::fs::File::open(path)?;
+
+    let meta = file.metadata()?;
+    if !meta.is_file() {
+        return Err(anyhow!("passphrase file must be a regular file"));
     }
     if meta.len() > MAX_PASSPHRASE_FILE_BYTES {
         return Err(anyhow!(
@@ -622,7 +642,7 @@ fn read_passphrase_file(path: &str) -> Result<String> {
         }
     }
 
-    let bytes = fs::read(path)?;
+    let bytes = read_to_end_limited(file, MAX_PASSPHRASE_FILE_BYTES as usize)?;
     let mut passphrase =
         String::from_utf8(bytes).map_err(|err| anyhow!("passphrase file must be valid UTF-8: {err}"))?;
     while passphrase.ends_with('\n') || passphrase.ends_with('\r') {
@@ -636,6 +656,28 @@ fn print_env(var: &str) {
         Ok(value) if !value.is_empty() => println!("{var}: {value}"),
         _ => println!("{var}: (not set)"),
     }
+}
+
+fn max_import_bytes() -> Result<usize> {
+    const DEFAULT_LIMIT: usize = 16 * 1024 * 1024;
+    match std::env::var("QPGP_MAX_IMPORT_BYTES") {
+        Ok(value) => value
+            .parse::<usize>()
+            .map_err(|err| anyhow!("invalid QPGP_MAX_IMPORT_BYTES value {value:?}: {err}")),
+        Err(_) => Ok(DEFAULT_LIMIT),
+    }
+}
+
+fn read_import_file(path: &str) -> Result<Vec<u8>> {
+    let limit = max_import_bytes()?;
+    let metadata = fs::metadata(path)?;
+    if metadata.len() > limit as u64 {
+        return Err(anyhow!(
+            "import exceeds size limit ({limit} bytes); set QPGP_MAX_IMPORT_BYTES to override"
+        ));
+    }
+    let file = std::fs::File::open(path)?;
+    read_to_end_limited(file, limit)
 }
 
 fn write_output(path: Option<String>, bytes: &[u8]) -> Result<()> {
@@ -714,9 +756,61 @@ fn write_file_secure(path: &str, bytes: &[u8]) -> Result<()> {
     use std::path::Path;
 
     let dest = Path::new(path);
+
+    // On Unix, proactively check the destination and its parent using O_NOFOLLOW
+    // to avoid obvious symlink-based surprises.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let parent = dest.parent().unwrap_or_else(|| Path::new("."));
+
+        // Reject a symlink as the final parent path component (best-effort; does not
+        // prevent symlinks in earlier path components without an openat-based walk).
+        let mut d = std::fs::OpenOptions::new();
+        d.read(true)
+            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC);
+        let dirfd = d.open(parent).map_err(|err| {
+            anyhow!(
+                "refusing to write into directory {}: {err}",
+                parent.display()
+            )
+        })?;
+        drop(dirfd);
+
+        // If the destination exists, ensure it is a regular file and not a symlink.
+        let mut f = std::fs::OpenOptions::new();
+        f.read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+        match f.open(dest) {
+            Ok(handle) => {
+                let meta = handle.metadata()?;
+                if !meta.is_file() {
+                    return Err(anyhow!(
+                        "refusing to write to non-regular file path: {}",
+                        dest.display()
+                    ));
+                }
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => {
+                return Err(anyhow!(
+                    "refusing to write to destination {}: {err}",
+                    dest.display()
+                ));
+            }
+        }
+    }
+
     if let Ok(meta) = fs::symlink_metadata(dest) {
         if meta.file_type().is_symlink() {
             return Err(anyhow!("refusing to write to symlink path: {}", dest.display()));
+        }
+        if !meta.file_type().is_file() {
+            return Err(anyhow!(
+                "refusing to write to non-regular file path: {}",
+                dest.display()
+            ));
         }
     }
 
@@ -936,6 +1030,15 @@ mod tests {
         let passphrase = read_passphrase_file(&path).expect("read");
         assert_eq!(passphrase, "secret");
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn read_passphrase_file_rejects_non_file() {
+        let path = temp_path("passphrase-dir");
+        std::fs::create_dir_all(&path).expect("mkdir");
+        let err = read_passphrase_file(&path).expect_err("expected file type error");
+        assert!(err.to_string().contains("regular file"), "unexpected: {err}");
+        let _ = std::fs::remove_dir_all(&path);
     }
 
     #[test]

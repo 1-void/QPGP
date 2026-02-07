@@ -25,16 +25,21 @@ impl TryFrom<HashAlgorithm> for DigestAlg {
 }
 
 struct OpenSslDigest {
-    digest: OsslDigest,
+    algo: HashAlgorithm,
+    digest: Option<OsslDigest>,
     digest_size: usize,
     update_result: std::result::Result<(), ossl::Error>,
 }
 
 impl Clone for OpenSslDigest {
     fn clone(&self) -> Self {
+        let digest = self
+            .digest
+            .as_ref()
+            .and_then(|d| d.try_clone().ok());
         Self {
-            digest: self.digest.try_clone()
-                .expect("Sequoia requires clone to succeed"),
+            algo: self.algo,
+            digest,
             digest_size: self.digest_size,
             update_result: self.update_result.clone(),
         }
@@ -46,7 +51,8 @@ impl OpenSslDigest {
         let ctx = super::context();
 
         Ok(Self {
-            digest: OsslDigest::new(&ctx, algo.try_into()?, None)?,
+            algo,
+            digest: Some(OsslDigest::new(&ctx, algo.try_into()?, None)?),
             digest_size: algo.digest_size()?,
             update_result: Ok(()),
         })
@@ -56,15 +62,27 @@ impl OpenSslDigest {
 impl Digest for OpenSslDigest {
     fn update(&mut self, data: &[u8]) {
         if self.update_result.is_ok() {
-            self.update_result = self.digest.update(data);
+            match self.digest.as_mut() {
+                Some(d) => self.update_result = d.update(data),
+                None => {
+                    // Keep update() infallible; digest() will surface the error.
+                }
+            }
         }
     }
 
     fn digest(&mut self, digest: &mut [u8]) -> Result<()> {
         self.update_result.clone()?;
+        let Some(d) = self.digest.as_mut() else {
+            return Err(crate::Error::InvalidOperation(format!(
+                "OpenSSL digest state missing for {:?}",
+                self.algo
+            ))
+            .into());
+        };
 
         let mut buf = vec![0; self.digest_size];
-        self.digest.finalize(&mut buf)?;
+        d.finalize(&mut buf)?;
 
         let l = digest.len().min(buf.len());
         digest[..l].copy_from_slice(&buf[..l]);

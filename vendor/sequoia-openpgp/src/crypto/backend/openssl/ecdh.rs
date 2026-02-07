@@ -42,11 +42,24 @@ where
     let mut deriver = ossl::derive::EcdhDerive::new(&ctx, &mut ephemeral)?;
     let mut shared: Protected = vec![0; curve.field_size()?].into();
     let size = deriver.derive(&mut public, &mut shared)?;
-    assert_eq!(shared.len(), size);
+    if shared.len() != size {
+        return Err(Error::InvalidOperation(format!(
+            "ECDH derive size mismatch: {} != {}",
+            shared.len(),
+            size
+        ))
+        .into());
+    }
 
     let q = match ephemeral.export()? {
         PkeyData::Ecc(EccData { ref pubkey, .. }) => {
-            pubkey.as_ref().expect("to be set").clone().into()
+            pubkey
+                .as_ref()
+                .ok_or_else(|| {
+                    Error::InvalidOperation("ECDH ephemeral public key not set".into())
+                })?
+                .clone()
+                .into()
         },
 
         _ => return Err(wrong_key()),
@@ -101,7 +114,14 @@ where
     let mut deriver = ossl::derive::EcdhDerive::new(&ctx, &mut secret)?;
     let mut shared: Protected = vec![0; curve.field_size()?].into();
     let size = deriver.derive(&mut ephemeral, &mut shared)?;
-    assert_eq!(shared.len(), size);
+    if shared.len() != size {
+        return Err(Error::InvalidOperation(format!(
+            "ECDH derive size mismatch: {} != {}",
+            shared.len(),
+            size
+        ))
+        .into());
+    }
 
     decrypt_unwrap(recipient.role_as_unspecified(), &shared, ciphertext,
                    plaintext_len)

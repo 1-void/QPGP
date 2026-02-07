@@ -444,7 +444,7 @@ impl Asymmetric for super::Backend {
         match key.export()? {
             PkeyData::Dsa(key) => {
                 Ok((key.p.into(), key.q.into(), key.g.into(),
-                    key.pub_key.into(), key.priv_key.expect("to be set").into()))
+                    key.pub_key.into(), key.priv_key.ok_or_else(not_set)?.into()))
             },
             _ => Err(wrong_key()),
         }
@@ -511,7 +511,7 @@ impl Asymmetric for super::Backend {
         let key = EvpPkey::generate(&ctx, EvpPkeyType::Mldsa65)?;
         match key.export()? {
             PkeyData::Mlkey(MlkeyData { ref pubkey, ref seed, .. }) => {
-                let pubkey = pubkey.as_ref().expect("to be set");
+                let pubkey = pubkey.as_ref().ok_or_else(not_set)?;
                 let mut public = Box::new([0; 1952]);
                 require_len(pubkey.len(), public.len(), "ML-DSA-65 public key")?;
                 public.copy_from_slice(pubkey);
@@ -567,7 +567,7 @@ impl Asymmetric for super::Backend {
         let key = EvpPkey::generate(&ctx, EvpPkeyType::Mldsa87)?;
         match key.export()? {
             PkeyData::Mlkey(MlkeyData { ref pubkey, ref seed, .. }) => {
-                let pubkey = pubkey.as_ref().expect("to be set");
+                let pubkey = pubkey.as_ref().ok_or_else(not_set)?;
                 let mut public = Box::new([0; 2592]);
                 require_len(pubkey.len(), public.len(), "ML-DSA-87 public key")?;
                 public.copy_from_slice(pubkey);
@@ -649,7 +649,7 @@ impl Asymmetric for super::Backend {
         let key = EvpPkey::generate(&ctx, EvpPkeyType::MlKem768)?;
         match key.export()? {
             PkeyData::Mlkey(MlkeyData { ref pubkey, ref seed, .. }) => {
-                let pubkey = pubkey.as_ref().expect("to be set");
+                let pubkey = pubkey.as_ref().ok_or_else(not_set)?;
                 let mut public = Box::new([0; 1184]);
                 require_len(pubkey.len(), public.len(), "ML-KEM-768 public key")?;
                 public.copy_from_slice(pubkey);
@@ -718,7 +718,7 @@ impl Asymmetric for super::Backend {
         let key = EvpPkey::generate(&ctx, EvpPkeyType::MlKem1024)?;
         match key.export()? {
             PkeyData::Mlkey(MlkeyData { ref pubkey, ref seed, .. }) => {
-                let pubkey = pubkey.as_ref().expect("to be set");
+                let pubkey = pubkey.as_ref().ok_or_else(not_set)?;
                 let mut public = Box::new([0; 1568]);
                 require_len(pubkey.len(), public.len(), "ML-KEM-1024 public key")?;
                 public.copy_from_slice(pubkey);
@@ -1155,8 +1155,9 @@ where
                 use std::cmp::Ordering;
 
                 // Make sure that p < q.
-                if raw_bigint_cmp(key.p.as_ref().expect("to be set"),
-                                  key.q.as_ref().expect("to be set"))
+                let p_ref = key.p.as_ref().ok_or_else(not_set)?;
+                let q_ref = key.q.as_ref().ok_or_else(not_set)?;
+                if raw_bigint_cmp(p_ref, q_ref)
                     == Ordering::Greater
                 {
                     // p > q, swap!
@@ -1172,9 +1173,9 @@ where
                         n: MPI::new(key.n.as_ref()),
                     },
                     mpi::SecretKeyMaterial::RSA {
-                        d: key.d.as_ref().expect("to be set").into(),
-                        p: key.p.as_ref().expect("to be set").into(),
-                        q: key.q.as_ref().expect("to be set").into(),
+                        d: key.d.as_ref().ok_or_else(not_set)?.into(),
+                        p: key.p.as_ref().ok_or_else(not_set)?.into(),
+                        q: key.q.as_ref().ok_or_else(not_set)?.into(),
                         u: u.into(),
                     }
                     .into())
@@ -1204,8 +1205,8 @@ where
 
         match key.export()? {
             PkeyData::Ecc(key) => {
-                let q = key.pubkey.as_ref().expect("to be set").clone().into();
-                let scalar = key.prikey.as_ref().expect("to be set").into();
+                let q = key.pubkey.as_ref().ok_or_else(not_set)?.clone().into();
+                let scalar = key.prikey.as_ref().ok_or_else(not_set)?.into();
 
                 if for_signing {
                     Ok((

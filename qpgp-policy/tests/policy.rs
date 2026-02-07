@@ -377,6 +377,22 @@ fn policy_accepts_multiple_signatures() {
 }
 
 #[test]
+fn policy_accepts_pqc_signature_with_extra_classic_signature() {
+    if !pqc_available() || !classic_available() {
+        return;
+    }
+    let pqc = generate_pqc_cert().expect("pqc cert");
+    let classic = generate_classic_cert().expect("classic cert");
+
+    let pqc_sig = sign_detached(&pqc, b"hello").expect("pqc sign");
+    let classic_sig = sign_detached(&classic, b"hello").expect("classic sign");
+
+    let mut combined = pqc_sig.clone();
+    combined.extend_from_slice(&classic_sig);
+    ensure_pqc_signature_output(&combined).expect("expected PQC signature to be accepted");
+}
+
+#[test]
 fn policy_accepts_single_signature() {
     if !pqc_available() {
         return;

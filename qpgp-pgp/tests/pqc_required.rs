@@ -1131,6 +1131,89 @@ fn verify_is_not_jammed_by_extra_valid_signature() {
 }
 
 #[test]
+fn verify_is_not_jammed_by_extra_invalid_signature() {
+    // If a detached signature blob contains at least one good signature, an attacker
+    // should not be able to force verification failure by appending a bad signature.
+    let _home = set_temp_home();
+    let backend = NativeBackend::new(PqcPolicy::Required);
+    if !require_pqc(backend.supports_pqc()) {
+        return;
+    }
+
+    let a = backend
+        .generate_key(KeyGenParams {
+            user_id: UserId("SignerA <a@example.com>".to_string()),
+            algo: None,
+            pqc_policy: PqcPolicy::Required,
+            pqc_level: PqcLevel::Baseline,
+            passphrase: None,
+            allow_unprotected: true,
+        })
+        .expect("keygen A");
+    let b = backend
+        .generate_key(KeyGenParams {
+            user_id: UserId("SignerB <b@example.com>".to_string()),
+            algo: None,
+            pqc_policy: PqcPolicy::Required,
+            pqc_level: PqcLevel::Baseline,
+            passphrase: None,
+            allow_unprotected: true,
+        })
+        .expect("keygen B");
+
+    let msg = b"detached signature jamming test (invalid)";
+    let sig_a = backend
+        .sign(SignRequest {
+            signer: a.key_id.clone(),
+            message: msg.to_vec(),
+            armor: false,
+            cleartext: false,
+            pqc_policy: PqcPolicy::Required,
+        })
+        .expect("sign A");
+    let mut sig_b = backend
+        .sign(SignRequest {
+            signer: b.key_id.clone(),
+            message: msg.to_vec(),
+            armor: false,
+            cleartext: false,
+            pqc_policy: PqcPolicy::Required,
+        })
+        .expect("sign B");
+
+    // Corrupt B's signature while keeping the packet parseable.
+    if let Some(last) = sig_b.last_mut() {
+        *last ^= 0x01;
+    }
+
+    let mut combined = sig_a.clone();
+    combined.extend_from_slice(&sig_b);
+
+    let result = backend
+        .verify(VerifyRequest {
+            message: msg.to_vec(),
+            signature: combined,
+            cleartext: false,
+            pqc_policy: PqcPolicy::Required,
+        })
+        .expect("verify");
+    assert!(result.valid, "expected verification to succeed");
+    assert!(
+        result.signers.iter().any(|s| s.0 == a.key_id.0),
+        "expected legitimate signer to be present"
+    );
+    assert!(
+        !result.signers.iter().any(|s| s.0 == b.key_id.0),
+        "expected corrupted signer to be absent"
+    );
+    assert_eq!(
+        result.signer.as_ref().map(|s| s.0.as_str()),
+        Some(a.key_id.0.as_str()),
+        "expected signer=SignerA when exactly one good signer exists"
+    );
+}
+
+#[test]
 fn export_armor_contains_header() {
     let _home = set_temp_home();
     let backend = NativeBackend::new(PqcPolicy::Required);

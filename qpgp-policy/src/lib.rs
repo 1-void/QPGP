@@ -226,32 +226,44 @@ pub fn ensure_pqc_signature_output(bytes: &[u8]) -> Result<(), PolicyError> {
     let pile = PacketPile::from_bytes(bytes)
         .map_err(|err| PolicyError::Parse(format!("parse output failed: {err}")))?;
     let mut sig_count = 0usize;
+    let mut pqc_ok = 0usize;
     for packet in pile.descendants() {
-        if let Packet::Signature(sig) = packet {
-            sig_count += 1;
-            let algo = sig.pk_algo();
-            if !is_pqc_sign_algo(algo) {
-                return Err(PolicyError::Violation(format!(
-                    "non-PQC signature found: {:?}",
-                    algo
-                )));
+        match packet {
+            Packet::Signature(sig) => {
+                sig_count += 1;
+                let algo = sig.pk_algo();
+
+                // Multiple signatures are allowed (e.g., co-signing or transitional
+                // dual-signing). In PQC-required mode we only need at least one PQC
+                // signature meeting the policy; non-PQC signatures are ignored here.
+                if !is_pqc_sign_algo(algo) {
+                    continue;
+                }
+                if sig.version() < 6 {
+                    continue;
+                }
+                if !hash_is_pqc_ok(sig.hash_algo()) {
+                    continue;
+                }
+                pqc_ok += 1;
             }
-            if sig.version() < 6 {
+            // For detached signatures, reject any non-signature packets to avoid
+            // accepting surprising packet sequences.
+            other => {
                 return Err(PolicyError::Violation(format!(
-                    "signature version is v{}",
-                    sig.version()
-                )));
-            }
-            if !hash_is_pqc_ok(sig.hash_algo()) {
-                return Err(PolicyError::Violation(format!(
-                    "weak hash used: {:?}",
-                    sig.hash_algo()
+                    "unexpected packet in detached signature: {:?}",
+                    other.tag()
                 )));
             }
         }
     }
     if sig_count == 0 {
         return Err(PolicyError::Violation("no signatures found".to_string()));
+    }
+    if pqc_ok == 0 {
+        return Err(PolicyError::Violation(
+            "no PQC signatures found".to_string(),
+        ));
     }
     Ok(())
 }

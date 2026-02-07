@@ -16,7 +16,7 @@ use openpgp::{Cert, KeyHandle, KeyID, Profile};
 use qpgp_core::{
     Backend, DecryptRequest, EncryptRequest, ImportRequest, KeyGenParams, KeyId, KeyMeta, PqcLevel,
     PqcPolicy, QpgpError, RevocationReason, RevokeRequest, RevokeResult, RotateRequest,
-    RotateResult, SignRequest, UserId, VerifyRequest, VerifyResult,
+    RotateResult, SignRequest, UserId, VerifyRequest, VerifyResult, sanitize_for_terminal,
 };
 use qpgp_policy::{
     cert_has_pqc_encryption_key, cert_has_pqc_signing_key, cert_is_pqc_only,
@@ -553,6 +553,7 @@ impl NativeBackend {
                     .next()
                     .map(|u| u.userid().to_string())
                     .unwrap_or_else(|| "(no user id)".to_string());
+                let user = sanitize_for_terminal(&user);
                 lines.push(format!("{} | {}", cert.fingerprint().to_hex(), user));
             }
             return Err(QpgpError::InvalidInput(format!(
@@ -1186,7 +1187,10 @@ impl Backend for NativeBackend {
             let mut content = Vec::new();
             let read_ok = verifier.read_to_end(&mut content).is_ok();
             let helper = verifier.into_helper();
-            let valid = read_ok && helper.valid_signature();
+            // Detached/cleartext verification can encounter errors if some signatures
+            // in a multi-signature set fail to validate. Per OpenPGP's multi-signature
+            // semantics, consider the message signed if at least one signature validates.
+            let valid = helper.valid_signature();
             if require_pqc && valid {
                 helper.enforce_pqc_verified_signatures()?;
             }
@@ -1196,7 +1200,7 @@ impl Backend for NativeBackend {
                 valid,
                 signer,
                 signers,
-                message: if valid { Some(content) } else { None },
+                message: if valid && read_ok { Some(content) } else { None },
             });
         }
 
@@ -1205,9 +1209,11 @@ impl Backend for NativeBackend {
             .with_policy(p, None, helper)
             .map_err(|err| QpgpError::Backend(format!("verifier failed: {err}")))?;
 
-        let read_ok = verifier.verify_bytes(&req.message).is_ok();
+        // Don't fail closed on "one bad signature in a multi-signature blob".
+        // We'll decide based on whether at least one signature validated.
+        let _ = verifier.verify_bytes(&req.message);
         let helper = verifier.into_helper();
-        let valid = read_ok && helper.valid_signature();
+        let valid = helper.valid_signature();
         if require_pqc && valid {
             helper.enforce_pqc_verified_signatures()?;
         }
@@ -1374,25 +1380,26 @@ impl NativeHelper {
             ));
         }
 
+        let mut pqc_ok = 0usize;
         for (pk_algo, hash_algo, sig_version) in good.iter().copied() {
+            // Multiple signatures are allowed; treat additional (including classical)
+            // signatures as ignorable metadata so long as at least one PQC signature
+            // meets the required constraints.
             if !is_pqc_sign_algo(pk_algo) {
-                return Err(QpgpError::Backend(format!(
-                    "policy violation: non-PQC signature found: {:?}",
-                    pk_algo
-                )));
+                continue;
             }
             if sig_version < 6 {
-                return Err(QpgpError::Backend(format!(
-                    "policy violation: signature version is v{}",
-                    sig_version
-                )));
+                continue;
             }
             if !hash_is_pqc_ok(hash_algo) {
-                return Err(QpgpError::Backend(format!(
-                    "policy violation: weak hash used: {:?}",
-                    hash_algo
-                )));
+                continue;
             }
+            pqc_ok += 1;
+        }
+        if pqc_ok == 0 {
+            return Err(QpgpError::Backend(
+                "policy violation: no PQC signatures found".to_string(),
+            ));
         }
         Ok(())
     }
@@ -1583,6 +1590,16 @@ fn ensure_cert_signatures_pqc(cert: &Cert) -> Result<(), QpgpError> {
             "certificate contains invalid signatures".to_string(),
         ));
     }
+    if cert.primary_key().self_signatures().next().is_none() {
+        return Err(QpgpError::InvalidInput(
+            "certificate missing primary key self-signature".to_string(),
+        ));
+    }
+    if cert.userids().next().is_none() {
+        return Err(QpgpError::InvalidInput(
+            "certificate has no user IDs".to_string(),
+        ));
+    }
     // Only require PQC algorithms for self-signatures / bindings.
     // Third-party certifications are treated as non-PQ-secure metadata
     // and are not used by QPGP's fingerprint-pinning trust model.
@@ -1590,16 +1607,35 @@ fn ensure_cert_signatures_pqc(cert: &Cert) -> Result<(), QpgpError> {
         ensure_signature_pqc(sig)?;
     }
     for uid in cert.userids() {
+        if uid.self_signatures().next().is_none() {
+            return Err(QpgpError::InvalidInput(
+                "certificate contains a user ID without a self-signature".to_string(),
+            ));
+        }
         for sig in uid.self_signatures() {
             ensure_signature_pqc(sig)?;
         }
     }
     for attr in cert.user_attributes() {
+        if attr.self_signatures().next().is_none() {
+            return Err(QpgpError::InvalidInput(
+                "certificate contains a user attribute without a self-signature".to_string(),
+            ));
+        }
         for sig in attr.self_signatures() {
             ensure_signature_pqc(sig)?;
         }
     }
+    let primary_fpr = cert.primary_key().key().fingerprint();
     for key in cert.keys() {
+        if key.key().fingerprint() == primary_fpr {
+            continue;
+        }
+        if key.self_signatures().next().is_none() {
+            return Err(QpgpError::InvalidInput(
+                "certificate contains a subkey without a binding signature".to_string(),
+            ));
+        }
         for sig in key.self_signatures() {
             ensure_signature_pqc(sig)?;
         }
