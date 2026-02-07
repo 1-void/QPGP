@@ -29,7 +29,8 @@ jobs:
       run: |
         set -euo pipefail
         source scripts/pqc-env.sh
-        cargo run -q -p qpgp-cli -- info | rg -q "pqc supported: true"
+        info="$(cargo run -q -p qpgp-cli -- info)"
+        grep -q "pqc supported: true" <<<"$info"
     - name: Build, fmt, clippy, and test (PQC)
       run: |
         set -euo pipefail
@@ -81,7 +82,8 @@ jobs:
       run: |
         set -euo pipefail
         source scripts/pqc-env.sh
-        cargo run -q -p qpgp-cli -- info | rg -q "pqc supported: true"
+        info="$(cargo run -q -p qpgp-cli -- info)"
+        grep -q "pqc supported: true" <<<"$info"
     - name: Build and test (PQC + OQS provider)
       run: |
         set -euo pipefail
