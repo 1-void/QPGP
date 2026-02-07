@@ -381,7 +381,9 @@ fn main() -> Result<()> {
         } => {
             let bytes = read_import_file(&path)?;
             if allow_unprotected_import {
-                eprintln!("warning: --allow-unprotected-import enabled; this may store plaintext secret key material on disk");
+                eprintln!(
+                    "warning: --allow-unprotected-import enabled; this may store plaintext secret key material on disk"
+                );
             }
             let meta = backend.import_key(ImportRequest {
                 bytes,
@@ -643,8 +645,8 @@ fn read_passphrase_file(path: &str) -> Result<String> {
     }
 
     let bytes = read_to_end_limited(file, MAX_PASSPHRASE_FILE_BYTES as usize)?;
-    let mut passphrase =
-        String::from_utf8(bytes).map_err(|err| anyhow!("passphrase file must be valid UTF-8: {err}"))?;
+    let mut passphrase = String::from_utf8(bytes)
+        .map_err(|err| anyhow!("passphrase file must be valid UTF-8: {err}"))?;
     while passphrase.ends_with('\n') || passphrase.ends_with('\r') {
         passphrase.pop();
     }
@@ -750,7 +752,7 @@ fn write_file_secure(path: &str, bytes: &[u8]) -> Result<()> {
     use std::io::Write;
 
     #[cfg(unix)]
-    use std::os::unix::fs::{PermissionsExt};
+    use std::os::unix::fs::PermissionsExt;
 
     use std::fs::Permissions;
     use std::path::Path;
@@ -804,7 +806,10 @@ fn write_file_secure(path: &str, bytes: &[u8]) -> Result<()> {
 
     if let Ok(meta) = fs::symlink_metadata(dest) {
         if meta.file_type().is_symlink() {
-            return Err(anyhow!("refusing to write to symlink path: {}", dest.display()));
+            return Err(anyhow!(
+                "refusing to write to symlink path: {}",
+                dest.display()
+            ));
         }
         if !meta.file_type().is_file() {
             return Err(anyhow!(
@@ -820,7 +825,8 @@ fn write_file_secure(path: &str, bytes: &[u8]) -> Result<()> {
     // Ensure strict permissions on the FD, not just on creation.
     #[cfg(unix)]
     {
-        tmp.as_file().set_permissions(Permissions::from_mode(0o600))?;
+        tmp.as_file()
+            .set_permissions(Permissions::from_mode(0o600))?;
     }
 
     tmp.write_all(bytes)?;
@@ -830,7 +836,8 @@ fn write_file_secure(path: &str, bytes: &[u8]) -> Result<()> {
     // Persist atomically where possible.
     #[cfg(unix)]
     {
-        tmp.persist(dest).map_err(|e| anyhow!("persist failed: {}", e.error))?;
+        tmp.persist(dest)
+            .map_err(|e| anyhow!("persist failed: {}", e.error))?;
     }
     #[cfg(not(unix))]
     {
@@ -840,7 +847,8 @@ fn write_file_secure(path: &str, bytes: &[u8]) -> Result<()> {
             Err(e) if e.error.kind() == std::io::ErrorKind::AlreadyExists => {
                 // Non-atomic fallback: remove then persist.
                 let _ = std::fs::remove_file(dest);
-                e.file.persist(dest)
+                e.file
+                    .persist(dest)
                     .map_err(|e| anyhow!("persist failed: {}", e.error))?;
             }
             Err(e) => return Err(anyhow!("persist failed: {}", e.error)),
@@ -892,10 +900,10 @@ fn enforce_expected_signer(expected: Option<&str>, result: &VerifyResult) -> Res
         return Err(anyhow!("signature does not include signer fingerprint"));
     }
     for signer in &result.signers {
-        if let Ok(actual) = normalize_fingerprint(&signer.0) {
-            if actual == expected {
-                return Ok(());
-            }
+        if let Ok(actual) = normalize_fingerprint(&signer.0)
+            && actual == expected
+        {
+            return Ok(());
         }
     }
     Err(anyhow!("signature not made by expected signer {expected}"))
@@ -1024,8 +1032,7 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
-                .expect("chmod");
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("chmod");
         }
         let passphrase = read_passphrase_file(&path).expect("read");
         assert_eq!(passphrase, "secret");
@@ -1037,7 +1044,10 @@ mod tests {
         let path = temp_path("passphrase-dir");
         std::fs::create_dir_all(&path).expect("mkdir");
         let err = read_passphrase_file(&path).expect_err("expected file type error");
-        assert!(err.to_string().contains("regular file"), "unexpected: {err}");
+        assert!(
+            err.to_string().contains("regular file"),
+            "unexpected: {err}"
+        );
         let _ = std::fs::remove_dir_all(&path);
     }
 
@@ -1048,8 +1058,7 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
-                .expect("chmod");
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("chmod");
         }
         let err = read_passphrase_file(&path).expect_err("expected utf8 error");
         assert!(
@@ -1159,8 +1168,9 @@ mod tests {
         enforce_expected_signer(Some("DEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF"), &result)
             .expect("expected match via signers list");
 
-        let err = enforce_expected_signer(Some("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"), &result)
-            .expect_err("expected mismatch");
+        let err =
+            enforce_expected_signer(Some("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"), &result)
+                .expect_err("expected mismatch");
         assert!(err.to_string().contains("expected signer"));
     }
 

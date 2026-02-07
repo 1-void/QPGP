@@ -2,17 +2,17 @@ use openpgp::armor::{Kind as ArmorKind, Writer as ArmorWriter};
 use openpgp::cert::prelude::*;
 use openpgp::crypto::{Password, SessionKey};
 use openpgp::packet::{PKESK, SKESK};
-use openpgp::parse::Parse;
 use openpgp::parse::stream::{
     DecryptionHelper, DecryptorBuilder, DetachedVerifierBuilder, MessageLayer, MessageStructure,
     VerificationHelper,
 };
+use openpgp::parse::{PacketParserBuilder, PacketParserResult, Parse};
 use openpgp::policy::StandardPolicy;
 use openpgp::serialize::stream::{Armorer, Encryptor, LiteralWriter, Message, Signer};
 use openpgp::serialize::{Serialize, SerializeInto};
 use openpgp::types::ReasonForRevocation;
 use openpgp::types::{AEADAlgorithm, HashAlgorithm, PublicKeyAlgorithm, SymmetricAlgorithm};
-use openpgp::{Cert, KeyHandle, KeyID, Profile};
+use openpgp::{Cert, KeyHandle, KeyID, Packet, Profile};
 use qpgp_core::{
     Backend, DecryptRequest, EncryptRequest, ImportRequest, KeyGenParams, KeyId, KeyMeta, PqcLevel,
     PqcPolicy, QpgpError, RevocationReason, RevokeRequest, RevokeResult, RotateRequest,
@@ -493,10 +493,9 @@ impl NativeBackend {
                 continue;
             }
 
-            let encrypted = key
-                .clone()
-                .encrypt_secret(passphrase)
-                .map_err(|err| QpgpError::Backend(format!("secret key encryption failed: {err}")))?;
+            let encrypted = key.clone().encrypt_secret(passphrase).map_err(|err| {
+                QpgpError::Backend(format!("secret key encryption failed: {err}"))
+            })?;
             out = if is_primary {
                 out.insert_packets(encrypted.role_into_primary())
                     .map_err(|err| QpgpError::Backend(format!("cert update failed: {err}")))?
@@ -831,8 +830,7 @@ impl Backend for NativeBackend {
                 // If a backend passphrase is configured, we transparently encrypt unprotected
                 // secret key material on import.
                 let mut prepared = cert.clone();
-                prepared = self
-                    .prepare_imported_secret_cert(&prepared, req.allow_unprotected)?;
+                prepared = self.prepare_imported_secret_cert(&prepared, req.allow_unprotected)?;
 
                 // If a public cert exists, merge its (public-only) updates into the imported TSK.
                 let merged = match self.load_cert_file(&public_path)? {
@@ -1009,11 +1007,15 @@ impl Backend for NativeBackend {
             ensure_pqc_encryption_output(&req.ciphertext).map_err(policy_error)?;
         }
         let certs = self.load_all_certs()?;
-        let has_encrypted_secret = certs.iter().any(|cert| {
-            cert.keys()
-                .secret()
-                .any(|key| key.key().secret().is_encrypted())
-        });
+        let encrypted_recipient = if self.passphrase.is_none() {
+            ciphertext_targets_encrypted_secret_key(
+                &certs,
+                &req.ciphertext,
+                req.allow_revoked_keys,
+            )?
+        } else {
+            false
+        };
         let helper = NativeHelper::new(certs, self.passphrase.clone())
             .with_allow_revoked_decryption_keys(req.allow_revoked_keys);
         let p = &StandardPolicy::new();
@@ -1024,7 +1026,7 @@ impl Backend for NativeBackend {
             Ok(decryptor) => decryptor,
             Err(err) => {
                 if self.passphrase.is_none()
-                    && has_encrypted_secret
+                    && encrypted_recipient
                     && err
                         .downcast_ref::<openpgp::Error>()
                         .is_some_and(|e| matches!(e, openpgp::Error::MissingSessionKey(_)))
@@ -1039,7 +1041,10 @@ impl Backend for NativeBackend {
 
         let mut out = Vec::new();
         if let Err(err) = decryptor.read_to_end(&mut out) {
-            if self.passphrase.is_none() && has_encrypted_secret {
+            if self.passphrase.is_none()
+                && encrypted_recipient
+                && io_error_is_missing_session_key(&err)
+            {
                 return Err(QpgpError::InvalidInput(
                     "secret key is encrypted; passphrase required".to_string(),
                 ));
@@ -1195,12 +1200,20 @@ impl Backend for NativeBackend {
                 helper.enforce_pqc_verified_signatures()?;
             }
             let signer = if valid { helper.signer() } else { None };
-            let signers = if valid { helper.good_signers() } else { Vec::new() };
+            let signers = if valid {
+                helper.good_signers()
+            } else {
+                Vec::new()
+            };
             return Ok(VerifyResult {
                 valid,
                 signer,
                 signers,
-                message: if valid && read_ok { Some(content) } else { None },
+                message: if valid && read_ok {
+                    Some(content)
+                } else {
+                    None
+                },
             });
         }
 
@@ -1217,7 +1230,11 @@ impl Backend for NativeBackend {
         if require_pqc && valid {
             helper.enforce_pqc_verified_signatures()?;
         }
-        let signers = if valid { helper.good_signers() } else { Vec::new() };
+        let signers = if valid {
+            helper.good_signers()
+        } else {
+            Vec::new()
+        };
         let signer = if valid && signers.len() == 1 {
             signers.first().cloned()
         } else {
@@ -1521,6 +1538,90 @@ impl DecryptionHelper for NativeHelper {
         }
         Ok(None)
     }
+}
+
+fn ciphertext_targets_encrypted_secret_key(
+    certs: &[Cert],
+    ciphertext: &[u8],
+    allow_revoked: bool,
+) -> Result<bool, QpgpError> {
+    let mut ppr = PacketParserBuilder::from_bytes(ciphertext)
+        .map_err(|err| QpgpError::Backend(format!("parse failed: {err}")))?
+        .build()
+        .map_err(|err| QpgpError::Backend(format!("parse failed: {err}")))?;
+    while let PacketParserResult::Some(pp) = ppr {
+        if let Packet::PKESK(pkesk) = &pp.packet
+            && let Some(recipient) = pkesk.recipient()
+            && encrypted_recipient_in_certs(certs, &recipient, allow_revoked)
+        {
+            return Ok(true);
+        }
+        ppr = pp
+            .recurse()
+            .map_err(|err| QpgpError::Backend(format!("parse failed: {err}")))?
+            .1;
+    }
+    Ok(false)
+}
+
+fn encrypted_recipient_in_certs(
+    certs: &[Cert],
+    recipient: &KeyHandle,
+    allow_revoked: bool,
+) -> bool {
+    let policy = StandardPolicy::new();
+    for cert in certs {
+        if !allow_revoked
+            && matches!(
+                cert.revocation_status(&policy, None),
+                openpgp::types::RevocationStatus::Revoked(_)
+            )
+        {
+            continue;
+        }
+        let keys = if allow_revoked {
+            cert.keys()
+                .secret()
+                .with_policy(&policy, None)
+                .supported()
+                .alive()
+                .for_transport_encryption()
+        } else {
+            cert.keys()
+                .secret()
+                .with_policy(&policy, None)
+                .supported()
+                .alive()
+                .revoked(false)
+                .for_transport_encryption()
+        };
+        for key in keys {
+            let key = key.key();
+            if !key.secret().is_encrypted() {
+                continue;
+            }
+            let handle: KeyHandle = key.fingerprint().into();
+            if handle.aliases(recipient) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn io_error_is_missing_session_key(err: &std::io::Error) -> bool {
+    let mut cur: Option<&(dyn std::error::Error + 'static)> = err
+        .get_ref()
+        .map(|e| e as &(dyn std::error::Error + 'static));
+    while let Some(e) = cur {
+        if e.downcast_ref::<openpgp::Error>()
+            .is_some_and(|e| matches!(e, openpgp::Error::MissingSessionKey(_)))
+        {
+            return true;
+        }
+        cur = e.source();
+    }
+    false
 }
 
 fn resolve_native_home() -> PathBuf {

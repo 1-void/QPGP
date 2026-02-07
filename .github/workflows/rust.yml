@@ -107,8 +107,23 @@ jobs:
         name: build-manifest-oqs
         path: artifacts
 
+  fuzz-smoke:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+    - name: Bootstrap PQC OpenSSL
+      run: ./scripts/bootstrap-pqc.sh
+    - name: Fuzz smoke test
+      run: |
+        set -euo pipefail
+        source scripts/pqc-env.sh
+
+        # Short, bounded runs to catch obvious parser/policy panics early.
+        cargo run -q --manifest-path fuzz/Cargo.toml --bin parse_packetpile -- -runs=2000 -max_total_time=20
+        cargo run -q --manifest-path fuzz/Cargo.toml --bin policy_validate -- -runs=2000 -max_total_time=20
+
   release:
-    needs: [build, build-oqs]
+    needs: [build, build-oqs, fuzz-smoke]
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:

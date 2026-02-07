@@ -291,7 +291,10 @@ fn policy_rejects_classic_pkesk() {
     let cert = generate_classic_cert().expect("classic cert");
     let ciphertext = encrypt_with_features(&cert, Features::sequoia(), true).expect("encrypt");
     let err = ensure_pqc_encryption_output(&ciphertext).expect_err("expected PKESK rejection");
-    assert!(err.to_string().contains("non-PQC recipient"), "unexpected: {err}");
+    assert!(
+        err.to_string().contains("non-PQC recipient"),
+        "unexpected: {err}"
+    );
 }
 
 #[test]
@@ -304,7 +307,10 @@ fn policy_rejects_missing_pkesk() {
     writer.finalize().expect("finalize");
 
     let err = ensure_pqc_encryption_output(&sink).expect_err("expected missing PKESK rejection");
-    assert!(err.to_string().contains("no recipient packets"), "unexpected: {err}");
+    assert!(
+        err.to_string().contains("no recipient packets"),
+        "unexpected: {err}"
+    );
 }
 
 #[test]
@@ -325,7 +331,10 @@ fn policy_rejects_missing_seip_packet() {
         packet.serialize(&mut stripped).expect("serialize");
     }
     let err = ensure_pqc_encryption_output(&stripped).expect_err("expected missing SEIP rejection");
-    assert!(err.to_string().contains("missing SEIP"), "unexpected: {err}");
+    assert!(
+        err.to_string().contains("missing SEIP"),
+        "unexpected: {err}"
+    );
 }
 
 #[test]
@@ -350,12 +359,53 @@ fn policy_rejects_sed_and_aed_packets() {
     //
     // Note: Sequoia enforces a minimum length on SED packets (>= 16 bytes),
     // so we provide a trivially-sized body that still parses.
-    let sed_min = [0xC0 | 9, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
-    let aed_min = [0xC0 | 20, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+    let sed_min = [
+        0xC0 | 9,
+        0x10,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+    ];
+    let aed_min = [
+        0xC0 | 20,
+        0x10,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+    ];
 
     for bytes in [sed_min.as_slice(), aed_min.as_slice()] {
         let err = ensure_pqc_encryption_output(bytes).expect_err("expected rejection");
-        assert!(err.to_string().contains("deprecated encrypted"), "unexpected: {err}");
+        assert!(
+            err.to_string().contains("deprecated encrypted"),
+            "unexpected: {err}"
+        );
     }
 }
 

@@ -8,6 +8,7 @@ We follow the draft’s post-quantum OpenPGP profile:
 - Composite (hybrid) algorithms for encryption and signatures (ML-KEM + X25519, ML-DSA + Ed25519/Ed448).
 - v6 key profile for PQC operations.
 - PQC required by default; outputs are validated to avoid classical fallbacks.
+- Certificates are PQC-only: mixed classical primary keys with PQC subkeys are rejected on import/load.
 - PQC-only build: classical modes and the gpg backend are disabled.
 
 See `SPEC.md` for the implementation profile and policy details.
@@ -34,7 +35,7 @@ Generate a high-assurance PQC key:
 cargo run -p qpgp-cli -- keygen "Alice <alice@example.com>" --pqc-level high
 ```
 
-Default `--pqc-level` is `high` for stronger parameters. Use `--pqc-level baseline` if you need smaller keys/signatures.
+Default `--pqc-level` is `high` for stronger parameters (falls back to `baseline` if `high` is not available). Use `--pqc-level baseline` if you need smaller keys/signatures.
 
 Generate a PQC key with a passphrase (native backend):
 ```bash
@@ -53,7 +54,7 @@ source scripts/pqc-env.sh
 cargo run -p qpgp-cli -- info
 ```
 
-`keygen` defaults to the high PQC suite. If your OpenSSL build lacks ML-DSA‑87/ML‑KEM‑1024, `keygen` will fail. Use `qpgp doctor` to confirm both baseline and high suites are available.
+`keygen` defaults to the high PQC suite. If your OpenSSL build lacks ML-DSA‑87/ML‑KEM‑1024, `keygen` falls back to the baseline suite instead of failing. Use `qpgp doctor` to confirm which suites are available.
 
 Optional source verification (recommended for reproducibility):
 ```bash

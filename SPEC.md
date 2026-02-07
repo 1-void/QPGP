@@ -27,6 +27,7 @@ We align with the draft’s composite (hybrid) algorithms and IDs:
 ## Policy
 - `PQC required` is the default.
 - PQC-only build: non-required policies are rejected and non-PQC artifacts are refused.
+- Certificate acceptance: all key material in a cert must be PQC-capable (no mixed classical primary keys with PQC subkeys).
 - When required, all outputs are validated and must contain only PQC algorithms:
   - Encryption: require SEIP v2 (AEAD) using AES-256 + OCB; every PKESK must use PQC KEM algorithms.
     - Additionally: if SEIP v2 is present, PKESK v3 is rejected (spec forbids mixing PKESK v3 cipher IDs with SEIP v2).
